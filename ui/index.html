@@ -1,0 +1,773 @@
+<!doctype html>
+<html lang="zh">
+  <head>
+    <meta charset="utf-8" />
+    <title>cairn FGS</title>
+    <script src="./cytoscape.min.js"></script>
+    <style>
+      :root {
+        color-scheme: dark;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font:
+          13px/1.5 ui-monospace,
+          Menlo,
+          monospace;
+        background: #0d1117;
+        color: #c9d1d9;
+        display: flex;
+        flex-direction: column;
+        height: 100vh;
+      }
+      /* ---------- top bar ---------- */
+      #topbar {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 8px 12px;
+        border-bottom: 1px solid #21262d;
+        background: #161b22;
+        flex-wrap: wrap;
+      }
+      #topbar h1 {
+        font-size: 14px;
+        margin: 0;
+        color: #58a6ff;
+        white-space: nowrap;
+      }
+      #goal {
+        flex: 1;
+        min-width: 200px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      #status {
+        padding: 2px 10px;
+        border-radius: 10px;
+        font-size: 12px;
+        white-space: nowrap;
+        background: #30363d;
+        color: #8b949e;
+      }
+      #status.running {
+        background: #d2992233;
+        color: #d29922;
+      }
+      #status.complete {
+        background: #2ea04333;
+        color: #2ea043;
+      }
+      #status.budget,
+      #status.error {
+        background: #f8514933;
+        color: #f85149;
+      }
+      #status.aborted {
+        background: #8957e533;
+        color: #8957e5;
+      }
+      #budget {
+        color: #8b949e;
+        font-size: 12px;
+        white-space: nowrap;
+      }
+      #abort {
+        background: #da3633;
+        color: #fff;
+        border: 0;
+        border-radius: 6px;
+        padding: 4px 12px;
+        font: inherit;
+        cursor: pointer;
+      }
+      #abort:disabled {
+        background: #30363d;
+        color: #484f58;
+        cursor: default;
+      }
+      /* ---------- layout ---------- */
+      #main {
+        flex: 1;
+        display: flex;
+        min-height: 0;
+      }
+      #side {
+        width: 320px;
+        min-width: 320px;
+        padding: 10px 12px;
+        overflow-y: auto;
+        border-right: 1px solid #21262d;
+      }
+      #right {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+      }
+      #graph {
+        flex: 1;
+        min-height: 0;
+      }
+      /* ---------- side panels ---------- */
+      h2 {
+        font-size: 11px;
+        color: #8b949e;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        margin: 14px 0 4px;
+      }
+      #origin {
+        background: #161b22;
+        border: 1px solid #30363d;
+        border-radius: 6px;
+        padding: 6px 8px;
+        white-space: pre-wrap;
+        word-break: break-all;
+        color: #8b949e;
+      }
+      #subgoals div {
+        padding: 1px 0;
+      }
+      .done {
+        color: #2ea043;
+      }
+      form {
+        display: flex;
+        gap: 6px;
+        margin-top: 6px;
+      }
+      form input {
+        flex: 1;
+        min-width: 0;
+        background: #010409;
+        color: #c9d1d9;
+        border: 1px solid #30363d;
+        border-radius: 6px;
+        padding: 5px 8px;
+        font: inherit;
+      }
+      .btn {
+        background: #238636;
+        color: #fff;
+        border: 0;
+        border-radius: 6px;
+        padding: 5px 12px;
+        font: inherit;
+        cursor: pointer;
+        white-space: nowrap;
+      }
+      #hint-msg {
+        font-size: 12px;
+        margin-top: 4px;
+        min-height: 16px;
+        color: #58a6ff;
+      }
+      #hints div {
+        font-size: 12px;
+        color: #8b949e;
+        margin: 2px 0;
+        word-break: break-all;
+      }
+      /* ---------- bottom tabs ---------- */
+      #tabs {
+        border-top: 1px solid #21262d;
+        height: 230px;
+        display: flex;
+        flex-direction: column;
+        background: #0d1117;
+      }
+      #tabbar {
+        display: flex;
+        gap: 2px;
+        padding: 4px 8px 0;
+        border-bottom: 1px solid #21262d;
+      }
+      #tabbar button {
+        background: transparent;
+        color: #8b949e;
+        border: 0;
+        border-bottom: 2px solid transparent;
+        padding: 5px 12px;
+        font: inherit;
+        cursor: pointer;
+      }
+      #tabbar button.active {
+        color: #58a6ff;
+        border-bottom-color: #58a6ff;
+      }
+      #tabbar .cnt {
+        color: #484f58;
+        font-size: 11px;
+      }
+      .tabpanel {
+        flex: 1;
+        overflow-y: auto;
+        padding: 6px 12px;
+        display: none;
+      }
+      .tabpanel.active {
+        display: block;
+      }
+      .row {
+        padding: 4px 6px;
+        border-radius: 4px;
+        word-break: break-all;
+        cursor: pointer;
+      }
+      .row:hover {
+        background: #161b22;
+      }
+      .row.hl {
+        background: #1f6feb33;
+        outline: 1px solid #1f6feb;
+      }
+      .row .rid {
+        color: #58a6ff;
+        margin-right: 6px;
+      }
+      .row .meta {
+        color: #8b949e;
+        font-size: 11px;
+        margin-left: 6px;
+      }
+      .badge {
+        display: inline-block;
+        padding: 0 6px;
+        border-radius: 8px;
+        font-size: 11px;
+        margin-left: 6px;
+      }
+      .badge.done {
+        background: #2ea04333;
+        color: #2ea043;
+      }
+      .badge.running {
+        background: #d2992233;
+        color: #d29922;
+      }
+      .badge.open {
+        background: #58a6ff33;
+        color: #58a6ff;
+      }
+      .badge.dropped {
+        background: #484f5833;
+        color: #8b949e;
+        text-decoration: line-through;
+      }
+      #tab-log {
+        font-size: 12px;
+      }
+      #tab-log .row {
+        cursor: default;
+      }
+      #tab-log .row:hover {
+        background: transparent;
+      }
+      #empty {
+        color: #484f58;
+        padding: 8px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="topbar">
+      <h1>cairn</h1>
+      <div id="goal">等待图数据…</div>
+      <span id="status">—</span>
+      <span id="budget"></span>
+      <button id="abort" disabled>abort</button>
+    </div>
+    <div id="main">
+      <div id="side">
+        <h2>origin</h2>
+        <div id="origin">—</div>
+        <h2>subgoals</h2>
+        <div id="subgoals"><div id="empty">—</div></div>
+        <h2>人工 hint</h2>
+        <form id="hint-form">
+          <input id="hint" placeholder="注入下一轮 DECIDE 快照" />
+          <button class="btn">注入</button>
+        </form>
+        <div id="hint-msg"></div>
+        <h2>hints</h2>
+        <div id="hints"></div>
+      </div>
+      <div id="right">
+        <div id="graph"></div>
+        <div id="tabs">
+          <div id="tabbar">
+            <button data-tab="tab-steps" class="active">
+              steps <span class="cnt" id="cnt-steps"></span>
+            </button>
+            <button data-tab="tab-facts">
+              facts <span class="cnt" id="cnt-facts"></span>
+            </button>
+            <button data-tab="tab-findings">
+              findings <span class="cnt" id="cnt-findings"></span>
+            </button>
+            <button data-tab="tab-log">log</button>
+          </div>
+          <div id="tab-steps" class="tabpanel active"></div>
+          <div id="tab-facts" class="tabpanel"></div>
+          <div id="tab-findings" class="tabpanel"></div>
+          <div id="tab-log" class="tabpanel"></div>
+        </div>
+      </div>
+    </div>
+    <script>
+      const $ = (id) => document.getElementById(id);
+
+      const cy = cytoscape({
+        container: $("graph"),
+        wheelSensitivity: 0.2,
+        style: [
+          {
+            selector: "node",
+            style: {
+              "background-color": "#30363d",
+              color: "#c9d1d9",
+              label: "data(label)",
+              "font-size": 11,
+              "text-wrap": "wrap",
+              "text-max-width": "140px",
+              "text-valign": "bottom",
+              "text-margin-y": -4,
+              "border-width": 2,
+            },
+          },
+          {
+            selector: "node:selected",
+            style: { "border-color": "#58a6ff", "z-index": 99 },
+          },
+          {
+            selector: "node[type=goal]",
+            style: {
+              shape: "diamond",
+              "background-color": "#1f6feb",
+              width: 44,
+              height: 44,
+              "text-valign": "center",
+            },
+          },
+          {
+            selector: "node[type=subgoal]",
+            style: {
+              shape: "round-rectangle",
+              "background-color": "#388bfd33",
+            },
+          },
+          {
+            selector: "node[type=origin]",
+            style: { shape: "ellipse", "background-color": "#8957e5" },
+          },
+          {
+            selector: "node[type=fact]",
+            style: { shape: "ellipse", "background-color": "#2ea04355" },
+          },
+          {
+            selector: "node[type=finding]",
+            style: { shape: "hexagon", "background-color": "#d2992255" },
+          },
+          { selector: "node[type=step]", style: { shape: "rectangle" } },
+          {
+            selector: 'node[type=step][status="done"]',
+            style: { "background-color": "#2ea043" },
+          },
+          {
+            selector: 'node[type=step][status="running"]',
+            style: { "background-color": "#d29922" },
+          },
+          {
+            selector: 'node[type=step][status="open"]',
+            style: { "background-color": "#58a6ff" },
+          },
+          {
+            selector: 'node[type=step][status="dropped"]',
+            style: { "background-color": "#484f58", "border-style": "dashed" },
+          },
+          {
+            selector: "edge",
+            style: {
+              "line-color": "#30363d",
+              "target-arrow-color": "#30363d",
+              width: 1.5,
+            },
+          },
+        ],
+      });
+
+      let lastJson = "",
+        lastStatus = "",
+        lastLogLine = null, // 最后一条已渲染日志行（null = 尚未渲染）
+        layoutDone = false; // 首渲后 layout 冻结，增量只加节点/边
+      let goalText = "",
+        stepDetails = {},
+        findingDetails = {},
+        factDetails = {};
+
+      const STATUS_LABEL = {
+        complete: "complete ✓",
+        budget: "budget 耗尽",
+        aborted: "aborted",
+        error: "error",
+        running: "running…",
+      };
+
+      // ---------------------------------------------------------------- status / log
+
+      async function tickStatus() {
+        let s;
+        try {
+          s = await (await fetch("/status")).json();
+        } catch {
+          return;
+        }
+        const key = s.running ? "running" : (s.reason ?? "running");
+        if (JSON.stringify(s) === lastStatus) return;
+        lastStatus = JSON.stringify(s);
+        const el = $("status");
+        el.textContent = STATUS_LABEL[key] ?? key;
+        el.className = s.running
+          ? "running"
+          : key === "complete"
+            ? "complete"
+            : key;
+        $("abort").disabled = !s.running;
+      }
+
+      async function tickLog() {
+        let lines;
+        try {
+          lines = await (await fetch("/log")).json();
+        } catch {
+          return;
+        }
+        if (!Array.isArray(lines)) return;
+        const p = $("tab-log");
+        // 服务端是滚动窗口（slice(-100)），用“最后一条已渲染行”定位增量
+        let append = lines;
+        if (lastLogLine !== null) {
+          if (!lines.length) return;
+          const idx = lines.lastIndexOf(lastLogLine);
+          if (idx === -1) {
+            // 窗口已滚过最后已知行（或服务端重启）→ 整体重渲
+            p.replaceChildren();
+          } else {
+            append = lines.slice(idx + 1);
+            if (!append.length) return;
+          }
+        }
+        const frag = document.createDocumentFragment();
+        for (const l of append) {
+          const d = document.createElement("div");
+          d.className = "row";
+          d.textContent = l;
+          frag.appendChild(d);
+        }
+        const nearBottom =
+          p.scrollTop + p.clientHeight >= p.scrollHeight - 40;
+        p.appendChild(frag);
+        lastLogLine = append[append.length - 1];
+        if (nearBottom) p.scrollTop = p.scrollHeight; // 仅当用户已在底部才自动跟随
+      }
+
+      // ---------------------------------------------------------------- side panel
+
+      function renderSide(g) {
+        $("goal").textContent = g.goal.text;
+        $("origin").textContent = g.origin;
+        const sg = $("subgoals");
+        if (!g.goal.subgoals.length) sg.innerHTML = '<div id="empty">—</div>';
+        else
+          sg.replaceChildren(
+            ...g.goal.subgoals.map((s) => {
+              const d = document.createElement("div");
+              d.textContent = `${s.done ? "✓" : "·"} ${s.id} ${s.text}`;
+              if (s.done) d.classList.add("done");
+              return d;
+            }),
+          );
+        const st = g.stats;
+        $("budget").textContent =
+          `decides ${st.decides} · executes ${st.executes} · concludes ${st.concludes}`;
+        $("hints").replaceChildren(
+          ...[...g.hints].reverse().map((h) => {
+            const d = document.createElement("div");
+            d.textContent = `${h.consumed ? "(已消费)" : "(待注入)"} ${h.text}`;
+            return d;
+          }),
+        );
+      }
+
+      // ---------------------------------------------------------------- bottom lists
+
+      function row(id, main, meta, badge) {
+        const d = document.createElement("div");
+        d.className = "row";
+        d.dataset.id = id;
+        const rid = document.createElement("span");
+        rid.className = "rid";
+        rid.textContent = id;
+        d.append(rid, document.createTextNode(main));
+        if (meta) {
+          const m = document.createElement("span");
+          m.className = "meta";
+          m.textContent = meta;
+          d.append(m);
+        }
+        if (badge) {
+          const b = document.createElement("span");
+          b.className = `badge ${badge}`;
+          b.textContent = badge;
+          d.append(b);
+        }
+        return d;
+      }
+
+      function renderLists(g) {
+        stepDetails = Object.fromEntries(g.steps.map((s) => [s.id, s.text]));
+        factDetails = Object.fromEntries(g.facts.map((f) => [f.id, f.text]));
+        findingDetails = Object.fromEntries(
+          g.findings.map((f) => [f.id, `${f.title}\nevidence: ${f.evidence}`]),
+        );
+
+        const steps = $("tab-steps");
+        steps.replaceChildren(
+          ...g.steps.map((s) => row(s.id, s.text, "", s.status)),
+        );
+        const facts = $("tab-facts");
+        facts.replaceChildren(
+          ...g.facts.map((f) => row(f.id, f.text, f.source)),
+        );
+        const fnds = $("tab-findings");
+        if (g.findings.length) {
+          const kids = [];
+          for (const f of g.findings) {
+            kids.push(row(f.id, f.title, f.source_step, undefined));
+            kids.push(document.createTextNode("   证据: " + f.evidence));
+          }
+          fnds.replaceChildren(...kids);
+        } else {
+          fnds.replaceChildren(emptyEl());
+        }
+        $("cnt-steps").textContent = g.steps.length;
+        $("cnt-facts").textContent = g.facts.length;
+        $("cnt-findings").textContent = g.findings.length;
+      }
+
+      function emptyEl() {
+        const d = document.createElement("div");
+        d.id = "empty";
+        d.textContent = "—";
+        return d;
+      }
+
+      function highlight(id, type) {
+        const tabMap = {
+          step: "tab-steps",
+          fact: "tab-facts",
+          finding: "tab-findings",
+        };
+        const tab = type === "origin" ? "tab-facts" : tabMap[type];
+        if (tab) switchTab(tab);
+        document
+          .querySelectorAll(".row.hl")
+          .forEach((r) => r.classList.remove("hl"));
+        const el = document.querySelector(`.row[data-id="${CSS.escape(id)}"]`);
+        if (el) {
+          el.classList.add("hl");
+          el.scrollIntoView({ block: "nearest" });
+        }
+      }
+
+      // ---------------------------------------------------------------- tabs
+
+      function switchTab(id) {
+        document
+          .querySelectorAll("#tabbar button")
+          .forEach((b) => b.classList.toggle("active", b.dataset.tab === id));
+        document
+          .querySelectorAll(".tabpanel")
+          .forEach((p) => p.classList.toggle("active", p.id === id));
+      }
+      document
+        .querySelectorAll("#tabbar button")
+        .forEach((b) =>
+          b.addEventListener("click", () => switchTab(b.dataset.tab)),
+        );
+
+      // ---------------------------------------------------------------- graph
+
+      function renderGraph(g) {
+        goalText = g.goal.text;
+        const nodes = [];
+        const wantEdges = new Map(); // "s->t" -> [source, target]（去重：不建双向重复边）
+        const node = (data) => nodes.push(data);
+        const edge = (source, target) => {
+          const k = `${source}->${target}`;
+          if (!wantEdges.has(k)) wantEdges.set(k, [source, target]);
+        };
+
+        node({ id: "goal", type: "goal", label: "GOAL" });
+        g.facts.forEach((f) => {
+          const origin = f.source === "origin";
+          node({
+            id: f.id,
+            type: origin ? "origin" : "fact",
+            label: `${f.id}\n${f.text.slice(0, 80)}`,
+          });
+          if (origin) edge(f.id, "goal");
+        });
+        g.goal.subgoals.forEach((s) => {
+          node({ id: s.id, type: "subgoal", label: s.text });
+          edge("goal", s.id);
+        });
+        g.steps.forEach((s) => {
+          node({
+            id: s.id,
+            type: "step",
+            status: s.status,
+            label: `${s.id}\n${s.text.slice(0, 80)}`,
+          });
+          if (s.result_fact_id) edge(s.id, s.result_fact_id);
+        });
+        // fact back-links: 仅当正向边 step→fact 不存在时才建反向边（删双向重复）
+        g.facts.forEach((f) => {
+          if (f.source.startsWith("step:") || f.source.startsWith("conclude:")) {
+            const sid = f.source.replace("conclude:", "").replace("step:", "");
+            if (!wantEdges.has(`${sid}->${f.id}`)) edge(f.id, sid);
+          }
+        });
+        g.findings.forEach((f) => {
+          node({ id: f.id, type: "finding", label: `${f.id}\n${f.title}` });
+          if (f.source_step) edge(f.source_step, f.id);
+        });
+
+        // ---- 增量：与当前 cy 状态 diff，只加新增/更新变更/删消失，不重跑 layout
+        const wantNodes = new Map(nodes.map((d) => [d.id, d]));
+        const addNodes = [];
+        [...cy.nodes()].forEach((n) => {
+          const want = wantNodes.get(n.id());
+          if (!want) {
+            n.remove();
+            return;
+          }
+          wantNodes.delete(n.id());
+          const cur = n.data();
+          const changed = Object.keys(want).some(
+            (k) => k !== "id" && cur[k] !== want[k],
+          );
+          if (changed)
+            n.data(Object.fromEntries(Object.entries(want).filter(([k]) => k !== "id")));
+        });
+        wantNodes.forEach((d) => addNodes.push(d));
+
+        const addEdges = [];
+        [...cy.edges()].forEach((e) => {
+          const k = `${e.data("source")}->${e.data("target")}`;
+          if (wantEdges.has(k)) wantEdges.delete(k);
+          else e.remove();
+        });
+        wantEdges.forEach((pair) =>
+          addEdges.push({ source: pair[0], target: pair[1] }),
+        );
+
+        if (!addNodes.length && !addEdges.length) return;
+        const preExisting = new Set(cy.nodes().map((n) => n.id()));
+        cy.add([
+          ...addNodes.map((d) => ({ data: d })),
+          ...addEdges.map((d) => ({ data: d })),
+        ]);
+        // 新节点放到第一个“已有邻居”旁边（确定性小偏移），避免堆在原点
+        addNodes.forEach((d) => {
+          const n = cy.getElementById(d.id);
+          if (!n.length) return;
+          const nbr = n
+            .connectedEdges()
+            .map((e) => e.nodes().toArray().find((x) => x !== n))
+            .find((x) => x && preExisting.has(x.id()));
+          const base = nbr ? nbr.position() : { x: 0, y: 0 };
+          const h = [...d.id].reduce((a, c) => a + c.charCodeAt(0), 0);
+          n.position({ x: base.x + 90 + (h % 5) * 26, y: base.y + ((h % 3) - 1) * 44 });
+        });
+
+        if (!layoutDone) {
+          cy.layout({ name: "cose", animate: false, nodeSpacing: 60 }).run();
+          layoutDone = true;
+        }
+      }
+
+      cy.on("tap", "node", (e) => {
+        const d = e.target.data;
+        highlight(d.id, d.type);
+      });
+      // bottom-list row click -> select the node in the DAG
+      document.addEventListener("click", (e) => {
+        const r = e.target.closest(".row[data-id]");
+        if (!r) return;
+        const id = r.dataset.id;
+        const n = cy.getElementById(id);
+        if (n.length) {
+          cy.nodes().unselect();
+          n.select();
+          cy.animate({ center: { eles: n } });
+        }
+      });
+
+      // ---------------------------------------------------------------- actions
+
+      $("hint-form").addEventListener("submit", async (ev) => {
+        ev.preventDefault();
+        const input = $("hint"),
+          msg = $("hint-msg");
+        const r = await fetch("/hints", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ text: input.value }),
+        });
+        const j = await r.json();
+        msg.textContent = r.ok
+          ? "已注入 ✓（下一轮 DECIDE 可见）"
+          : (j.error ?? "失败");
+        if (r.ok) input.value = "";
+      });
+
+      $("abort").addEventListener("click", async () => {
+        const r = await fetch("/abort", { method: "POST" });
+        const j = await r.json();
+        $("hint-msg").textContent = r.ok
+          ? "abort 已请求（当前子会话结束后退出）"
+          : (j.error ?? "失败");
+      });
+
+      // ---------------------------------------------------------------- polling
+
+      async function tick() {
+        await tickStatus();
+        await tickLog();
+        let g;
+        try {
+          const r = await fetch("/graph");
+          if (r.status === 200) g = await r.json();
+        } catch {
+          return;
+        }
+        if (!g) return;
+        renderSide(g);
+        const json = JSON.stringify(g);
+        if (json === lastJson) return;
+        lastJson = json;
+        renderGraph(g);
+        renderLists(g);
+      }
+
+      setInterval(tick, 2000);
+      tick();
+    </script>
+  </body>
+</html>

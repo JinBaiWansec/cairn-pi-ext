@@ -1,0 +1,32 @@
+{
+  "name": "cairn-pi-ext",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Cairn_Y FGS pentest engine as a Pi extension (headless serial scheduler, UI on :8377)",
+  "license": "MIT",
+  "keywords": [
+    "pi-package"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ],
+    "image": "https://img.shields.io/badge/pi-cairn%20FGS-2ea44f"
+  },
+  "files": [
+    "src",
+    "ui",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^26.4.1",
+    "jiti": "^2.7.0"
+  }
+}
