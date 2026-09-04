@@ -350,12 +350,16 @@ export function makeSubmitFact(
       }
     }
 
+    // 快路径判定依据（Step 5）：kind 仅接受 positive/negative，其余值忽略（不落图）
+    const kind =
+      a.kind === "positive" || a.kind === "negative" ? a.kind : undefined;
     const { fact, superseded } = buildFactEntry({
       id,
       description: a.description,
       evidence: a.evidence,
       by: ctx.by ?? "model",
       quality: degraded ? "degraded" : "normal",
+      ...(kind ? { kind } : {}),
       existing: g.facts,
       blocks: a.blocks,
     });

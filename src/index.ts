@@ -16,34 +16,14 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { CairnEngine, DEFAULTS, startEngine } from "./engine.js";
-import { FgsGraph } from "./graph.js";
+import { CairnEngine, startEngine } from "./engine.js";
+import { loadConfig } from "./config.js";
+import { GraphOps } from "./graphops.js";
+import type { FGSGraph } from "./graph.js";
 
 const PORT = Number(process.env.CAIRN_UI_PORT ?? 8377);
 
-// env overrides for verification (PLAN §9) and per-deployment tuning.
-function envCfg(): typeof DEFAULTS {
-  const num = (k: string, d: number) => {
-    const v = process.env[k];
-    return v && !Number.isNaN(Number(v)) ? Number(v) : d;
-  };
-  return {
-    ...DEFAULTS,
-    decideModel: process.env.CAIRN_DECIDE_MODEL ?? DEFAULTS.decideModel,
-    executeModel: process.env.CAIRN_EXECUTE_MODEL ?? DEFAULTS.executeModel,
-    maxExecutes: num("CAIRN_MAX_EXECUTES", DEFAULTS.maxExecutes),
-    decideTimeoutMs: num("CAIRN_DECIDE_TIMEOUT_MS", DEFAULTS.decideTimeoutMs),
-    executeTimeoutMs: num(
-      "CAIRN_EXECUTE_TIMEOUT_MS",
-      DEFAULTS.executeTimeoutMs,
-    ),
-    concludeTimeoutMs: num(
-      "CAIRN_CONCLUDE_TIMEOUT_MS",
-      DEFAULTS.concludeTimeoutMs,
-    ),
-    dormancyMs: num("CAIRN_DORMANCY_MS", DEFAULTS.dormancyMs),
-  };
-}
+// Step 5：envCfg 旧 API 删除 —— 配置统一走 config.ts loadConfig()（CAIRN_* env 覆盖内置）。
 const UI_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..", "ui");
 
 const MIME: Record<string, string> = {
@@ -95,7 +75,8 @@ export function closeUiServer(): void {
   rememberLog("[cairn] ui server stopped");
 }
 
-export function ensureUiServer(graph: FgsGraph): void {
+/** Step 5：ensureUiServer 改收 GraphOps（/graph 读 fgs.json 原文，/hints 走 applyOp）。 */
+export function ensureUiServer(ops: GraphOps): void {
   if (uiServer) return;
   uiServer = createServer((req, res) => {
     const url = (req.url ?? "/").split("?")[0];
@@ -104,9 +85,11 @@ export function ensureUiServer(graph: FgsGraph): void {
         res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
         res.end(readFileSync(join(UI_DIR, "index.html"), "utf8"));
       } else if (req.method === "GET" && url === "/graph") {
-        const g = FgsGraph.peek(uiWorkspace);
-        res.writeHead(g ? 200 : 404, { "content-type": "application/json" });
-        res.end(g ? JSON.stringify(g) : "null");
+        const f = join(uiWorkspace, "fgs.json");
+        res.writeHead(existsSync(f) ? 200 : 404, {
+          "content-type": "application/json",
+        });
+        res.end(existsSync(f) ? readFileSync(f, "utf8") : "null");
       } else if (req.method === "POST" && url === "/hints") {
         let body = "";
         req.on("data", (c) => (body += c));
@@ -115,7 +98,19 @@ export function ensureUiServer(graph: FgsGraph): void {
             const { text } = JSON.parse(body || "{}") as { text?: unknown };
             if (typeof text !== "string" || !text.trim())
               throw new Error('body must be {"text": "<non-empty>"}');
-            graph.injectHint(text.trim());
+            // Step 5：injectHint → Single-Writer applyOp（add_hint, by=user）
+            ops.applyOp("add_hint", "user", (draft: FGSGraph) => {
+              const n =
+                draft.hints.reduce(
+                  (m, h) => Math.max(m, Number(h.id.slice(2)) || 0),
+                  0,
+                ) + 1;
+              draft.hints.push({
+                id: `h-${n}`,
+                text: text.trim(),
+                status: "active",
+              });
+            });
             rememberLog(`[cairn] hint injected: ${text.slice(0, 80)}`);
             res.writeHead(200, { "content-type": "application/json" });
             res.end(JSON.stringify({ ok: true }));
@@ -247,23 +242,33 @@ export default function cairnExtension(pi: ExtensionAPI): void {
       }
 
       const workspace = resolve(ctx.cwd, "cairn-workspace");
-      const resumed = FgsGraph.exists(workspace);
+      const resumed = GraphOps.exists(workspace);
       uiWorkspace = workspace;
-      // Rebind the UI server to this run's graph instance (the previous
+      // Rebind the UI server to this run's ops instance (the previous
       // run's /hints closure would otherwise mutate a stale copy).
       closeUiServer();
 
-      const started = startEngine(
-        {
-          ...envCfg(),
-          workspace,
-          onWidget: (lines) => ctx.ui.setWidget("cairn", lines),
-          onLog: rememberLog,
-        },
-        origin,
-        goal,
-      );
-      ensureUiServer(started.graph);
+      let started;
+      try {
+        started = startEngine(
+          {
+            runDir: workspace,
+            cfg: loadConfig(),
+            onWidget: (lines) => ctx.ui.setWidget("cairn", lines),
+            onLog: rememberLog,
+            onBanner: (text) => ctx.ui.notify(text, "warning"),
+          },
+          origin,
+          goal,
+        );
+      } catch (e) {
+        ctx.ui.notify(
+          `cairn start failed: ${e instanceof Error ? e.message : String(e)}`,
+          "error",
+        );
+        return;
+      }
+      ensureUiServer(started.ops);
       engineState.running = true;
       engineState.reason = null;
 
@@ -290,7 +295,7 @@ export default function cairnExtension(pi: ExtensionAPI): void {
 
   // PLAN §7: at session_start, hint that an existing workspace can resume.
   pi.on("session_start", (_event, ctx) => {
-    if (FgsGraph.exists(resolve(ctx.cwd, "cairn-workspace")))
+    if (GraphOps.exists(resolve(ctx.cwd, "cairn-workspace")))
       ctx.ui.notify(
         "cairn: workspace exists — /cairn run will RESUME it",
         "info",

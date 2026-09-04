@@ -445,6 +445,8 @@ export interface FGSFact {
   /** 引用了已作废 Fact 的 id 列表（§5.3 弱关联，不拦截只标记）。 */
   weak_refs?: string[];
   quality?: "normal" | "degraded";
+  /** 快路径判定依据（Step 5）：positive = 新正面事实（触发 done_step 快路径）；negative = 负事实/阻断（§6.3 纪律 3）。缺省 = 未标注。 */
+  kind?: "positive" | "negative";
   created_at: number;
   created_by: "model" | "user";
 }
@@ -652,11 +654,13 @@ export function buildFactEntry(args: {
   evidence: string;
   by: "model" | "user";
   quality?: "normal" | "degraded";
+  /** 快路径判定依据（Step 5）：positive/negative，缺省 = 未标注。 */
+  kind?: "positive" | "negative";
   /** 本 fact 作废的既有 fact id 列表。 */
   blocks?: string[];
   existing: FGSFact[];
 }): { fact: FGSFact; superseded: Array<{ id: string; by: string }> } {
-  const { id, description, evidence, by, quality, existing } = args;
+  const { id, description, evidence, by, quality, kind, existing } = args;
   const blocks = args.blocks ?? [];
   const refs = [...`${description}\n${evidence}`.matchAll(/f-(\d+)/g)].map(
     (m) => `f-${m[1]}`,
@@ -671,6 +675,7 @@ export function buildFactEntry(args: {
     spill_path: `notes/facts/${id}.txt`,
     ...(weak.length ? { weak_refs: weak } : {}),
     ...(quality ? { quality } : {}),
+    ...(kind ? { kind } : {}),
     created_at: Date.now(),
     created_by: by,
   };

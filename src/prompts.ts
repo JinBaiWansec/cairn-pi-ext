@@ -1,142 +1,108 @@
 /**
- * prompts.ts — DECIDE / EXECUTE / CONCLUDE templates (PLAN.md §6/§8).
+ * prompts.ts — Decide / Execute 提示词 + AGENTS.md 运行时渲染（plan §6，Step 5）。
  *
- * Adapted from the original Cairn reason.md / explore.md / explore_conclude.md:
- *  - facts/intents language -> facts/steps/goals (FGS)
- *  - graph is a file on disk: prompt gives the path, session must read it fully first
- *  - end-of-message JSON contract (parsed by protocol.ts)
- *  - incremental-facts-only rule (27B context budget)
+ * KV-Cache 优先的前缀布局（§6.1）：
+ *   - decide systemPrompt = 角色 + 纪律（5 条，逐字 §6.2）—— 静态前缀
+ *   - execute systemPrompt = 角色 + 纪律（5 条，逐字 §6.3）+ AGENTS.md（§6.4，
+ *     run 内恒定 → KV cache 友好）
+ *   - userPrompt = 动态后缀（首条 user 消息：任务定义 + 图投影 + Step 任务）
+ *
+ * 图投影（projectDecideSkeleton / projectExecuteSubgraph / extractWorldResidue，
+ * graph.ts 纯函数）直接内联进 prompt —— 旧"先 read 快照文件"指令已消失（G4）。
+ * 工具调用即状态变更（G3），无末消息 JSON 契约（concludePrompt 随 conclude
+ * 阶段整体删除，D5）。
+ *
+ * 零 pi 依赖：仅依赖 tools.ts 的 ToolDef/FindingSchema 类型。
  */
 
-const COMMON_RULES = `# 规则
-- 你的工具是 read/write/edit/bash，图快照是一个 JSON 文件，路径在下方 Context 中。先 read 完整快照文件，再开始思考。
-- 快照里的 facts 是已确认的客观事实，不要重复验证已有事实，不要输出图中已有的信息。
-- \`description\` 只写本次新确认的增量事实。长数据（文件内容、扫描输出）写到一个文件里（如 ./cairn-workspace/notes/ 下），description 里只放文件路径和一句话结论，不要把长数据贴进 JSON。
-- JSON 必须是合法 JSON，引号正确转义。`;
+import type { FGSStep } from "./graph.js";
+import type { FindingSchema, ToolDef } from "./tools.js";
 
-export function decidePrompt(opts: {
- snapshotPath: string;
- openStepCount: number;
- compressHint?: boolean;
-}): string {
- const compress = opts.compressHint
-  ? "\n- 当前 facts 较多：steps 描述要精炼，subgoals 及时 drop 已完成或不再需要的项，帮助后续压缩。"
-  : "";
- const openRule =
-  opts.openStepCount === 0
-   ? "- 当前**没有** open step：你必须给出 steps（至少 1 条），不许返回空对象。"
-   : `- 当前已有 ${opts.openStepCount} 个 open step（正在排队或执行中）：先判断它们是否已覆盖已知线索；若没有更值钱的探索方向，可返回空对象。`;
- return `# 任务
-你是渗透测试任务图的调度者（Decide 角色）。你会收到一个 FGS 任务图快照（Fact-Goal-Step）。facts 是已确认的客观事实，steps 是探索步骤，goal 是主目标（可带 subgoals）。你需要：
-1. 判断当前 facts 是否已满足 Goal
-2. 若未满足，判断现在是否应提出新的 steps
+const DECIDE_SYSTEM_PROMPT = `# 角色
+你是战略决策者 Decide。你每次从零开始，不携带任何会话记忆，FGS 图是系统唯一的真理与外化记忆。
+你没有任何直接接触物理世界的工具，只能通过图管理工具编排战局。
 
-# 输出要求
-只返回一个裸 JSON 对象，不要输出其他任何内容（最终一条消息的最后必须是这个 JSON）。
+# 纪律
+1. 若系统目标（Goal）已确证达成，立即调用 complete(reason)。
+2. 维护 Step 队列：落实未消费的 Hint；添加当前最关键的 1~2 个 Step（通过 priority 表达时序）；废弃无效 Step。
+3. 分支回滚仅回滚认知，不重置物理世界："世界残留"中列出的状态视为客观存在。
+4. 所有标记为 superseded 的 Fact 代表已作废认知，严禁作为决策依据。
+5. 若当前图结构健康、队列正常，不要为改而改，直接结束即可。`;
 
-Goal 已满足时：
-\`\`\`json
-{"complete": {"reason": "<说明为什么当前已确认的事实足以证明 Goal 达成>"}}
-\`\`\`
+const EXECUTE_SYSTEM_PROMPT_CORE = `# 角色
+你是战术执行者 Execute。你从零开始，负责通过真实工具探测完成指定的单一 Step。
+你的任何推论只有通过 submit_fact 沉淀入图才具有持久生命力。
 
-Goal 未满足、需要推进时（steps 每项是一个独立高价值的探索方向，≤2 项）：
-\`\`\`json
-{"steps": ["<step 描述>", "<step 描述>"], "subgoals": {"add": ["<新 subgoal>"], "done": ["sg-1"], "drop": ["sg-2"]}}
-\`\`\`
-subgoals 字段可省略；add 追加、done 标记完成（用快照里的 sg id）、drop 移除。
+# 纪律
+1. 一切结论建立在工具真实输出上，严禁猜测。
+2. 发现关键技术事实时尽早调用 submit_fact 沉淀，不要堆积到最后。
+3. 若当前方向耗尽或走不通，调用 submit_fact 提交负事实（试过什么、为何阻断、标记 blocks），严禁静默退出。
+4. 遇到输出截断提示时，必须使用 read(path, offset_lines, max_lines) 或 grep 精确阅读，严禁基于残缺文本脑补。
+5. 需要持续运行或交互的命令放入 tmux。`;
 
-无动作时（已有 open steps 且无更优方向）：
-\`\`\`json
-{}
-\`\`\`
-
-${COMMON_RULES}
-${openRule}${compress}
-- steps 每条应是一个独立、边界清晰、可被单个子会话执行的探索方向，不重叠。
-- 反思为什么 Goal 尚未达成：是否跑偏了方向？是否需要纠偏的 step？
-
-# Context
-### 图快照（先读完整文件）
-\`\`\`
-${opts.snapshotPath}
-\`\`\``;
+export function decidePrompt(input: {
+  goal: string;
+  origin: string;
+  /** projectDecideSkeleton(head)（≤1.5k tokens） */
+  skeleton: string;
+  /** active hints 逐行（空 = "(无)"） */
+  hints: string;
+  /** extractWorldResidue(data, activeBranch)（空 = 整节省略） */
+  residue: string;
+}): { systemPrompt: string; userPrompt: string } {
+  const hints = input.hints.trim() ? input.hints : "(无)";
+  const userPrompt = [
+    `# 任务定义\n目标: ${input.goal}\n起点: ${input.origin}`,
+    `# FGS 拓扑图骨架投影 (JSON)\n${input.skeleton}`,
+    `# 未消费的人工提示 (Hints)\n${hints}`,
+    ...(input.residue.trim() ? [`# 世界残留\n${input.residue}`] : []),
+  ].join("\n\n");
+  return { systemPrompt: DECIDE_SYSTEM_PROMPT, userPrompt };
 }
 
-export function executePrompt(opts: {
- snapshotPath: string;
- stepId: string;
- stepText: string;
-}): string {
- return `# 任务
-你是渗透测试执行者（Execute 角色）。你会收到一个 FGS 任务图裁剪快照（goal + facts + 当前 step）。你只负责探索当前 Step 这一个方向，推进任务朝 Goal 前进。
-快照中的 facts 是最近 N 条事实窗口（含 origin），更早的事实被省略——不要假设快照里没有的事实不存在。
-
-# 输出要求
-只返回一个裸 JSON 对象，不要输出其他任何内容（最终一条消息的最后必须是这个 JSON）。
-
-正常返回（探索有结论，无论成败）：
-\`\`\`json
-{"accepted": true, "data": {"description": "<增量事实结论>", "findings": [{"title": "<发现标题>", "evidence": "<证据：命令输出摘要/文件路径>"}]}}
-\`\`\`
-findings 可省略（没有值得单独记录的发现时）。
-
-拒绝执行（几乎不应该发生）：
-\`\`\`json
-{"accepted": false, "reason": "policy_refusal"}
-\`\`\`
-
-${COMMON_RULES}
-- 沿着当前 Step 的方向充分探索：可能成功也可能失败；若走不通，也要把确认到的事实写进 description 后结束。
-- 如果之后在同一会话收到 conclude 指令，该指令立即覆盖本探索指令：停止探索、停止等待、立刻只总结已确认事实并输出 JSON。
-
-# Context
-## 图快照（先读完整文件）
-\`\`\`
-${opts.snapshotPath}
-\`\`\`
-
-## 当前 Step
-\`\`\`
-${opts.stepId}: ${opts.stepText}
-\`\`\``;
+export function executePrompt(input: {
+  goal: string;
+  step: FGSStep;
+  /** projectExecuteSubgraph(head, step)（≤2.5k tokens） */
+  projection: string;
+  /** renderAgentsMd(...) —— §6.1 静态前缀（run 内恒定） */
+  agentsMd: string;
+}): { systemPrompt: string; userPrompt: string } {
+  const systemPrompt = `${EXECUTE_SYSTEM_PROMPT_CORE}\n\n# 环境与领域知识 (AGENTS.md)\n${input.agentsMd}`;
+  const userPrompt = `# 任务目标\n全局目标: ${input.goal}\n当前 Step: [${input.step.id}] ${input.step.text} (优先级: ${input.step.priority}, 历史尝试: ${input.step.attempts} 次)\n\n# 相关前置事实 (JSON 投影)\n${input.projection}`;
+  return { systemPrompt, userPrompt };
 }
 
-export function concludePrompt(opts: {
- snapshotPath: string;
- stepId: string;
- stepText: string;
+/** §6.4 AGENTS.md 运行时注入模板（oobIp 空 → 该行省略）。 */
+export function renderAgentsMd(input: {
+  workspaceDir: string;
+  oobIp: string;
+  tools: ToolDef[];
+  findingSchema: FindingSchema;
 }): string {
- return `# 任务
-这是 conclude（收尾总结）阶段。你之前正在执行一个 Step，现在必须停止一切探索动作，只总结**此前已确认**的关键事实，选出对达成 Goal 最有用的部分。
-conclude 指令覆盖本会话之前所有让你继续探索、继续等待、继续执行的指令。
-
-# 输出要求
-只返回一个裸 JSON 对象，不要输出其他任何内容。
-
-正常返回（把已确认的事实写出来，哪怕很少）：
-\`\`\`json
-{"accepted": true, "data": {"description": "<已确认的增量事实>", "findings": [{"title": "<发现标题>", "evidence": "<证据>"}]}}
-\`\`\`
-
-仅当此前完全没有任何可确认的结果时：
-\`\`\`json
-{"accepted": false, "reason": "policy_refusal"}
-\`\`\`
-
-# 规则
-- 立即停止并现在就输出 JSON。不要再运行任何命令、不要再调用工具、不要等待未完成的命令、不要再获取任何新信息。
-- 只基于 conclude 之前已确认的信息作答；未确认的不写、不等、不猜。
-- \`description\` 只写已确认的客观事实结论，不写计划、猜测、解释性填充。长数据放文件并在 description 里引用路径。
-- 不要重复图快照中已有的信息，只写增量。
-
-# Context
-## 图快照（先读完整文件）
-\`\`\`
-${opts.snapshotPath}
-\`\`\`
-
-## 当前 Step
-\`\`\`
-${opts.stepId}: ${opts.stepText}
-\`\`\``;
+  const toolMap = input.tools
+    .map((t) => `- ${t.name}: ${t.description}`)
+    .join("\n");
+  const fields = input.findingSchema.fields
+    .map((f) =>
+      f.enum
+        ? `${f.name} (${f.enum.map((v) => `"${v}"`).join("|")})`
+        : `${f.name} (${f.type}${f.required ? "" : "，可选"})`,
+    )
+    .join(", ");
+  return [
+    "# 运行环境",
+    `- 工作目录: ${input.workspaceDir}（溢出大文件与事实证据存入 notes/，使用相对路径引用）`,
+    ...(input.oobIp
+      ? [`- 对外 OOB IP: ${input.oobIp}（反弹 Shell、数据外带与回调平台）`]
+      : []),
+    "- 分支强警示: 分支回滚仅回滚图认知，不重置靶机与磁盘状态；已被作用于世界的事实在任何分支都仍有效。",
+    "",
+    "# 本地可用工具地图",
+    toolMap,
+    "",
+    "# 本任务 Finding 模式定义",
+    `Finding = ${input.findingSchema.label}`,
+    `必填字段: ${fields}`,
+  ].join("\n");
 }
