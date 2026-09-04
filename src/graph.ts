@@ -415,3 +415,268 @@ export class FgsGraph {
     return Buffer.byteLength(JSON.stringify(this.data), "utf8");
   }
 }
+
+// ============================================================================
+// 二期 FGS 数据结构（plan §4.1）— revision 树 + 分支
+//
+// fgs.json = FGSFile（version 2）；每次图变更由 GraphOps.append 一条不可变
+// FGSRevision（rev-<n> 全局单调递增，全量图快照）。旧 Fgs/FgsGraph API 保留
+// 至 Step 5/7 随 engine/index 重写删除。
+// ============================================================================
+
+export interface FGSStep {
+  id: string;
+  text: string;
+  priority: number;
+  status: "pending" | "in_progress" | "done" | "dropped";
+  addresses_hint?: string;
+  attempts: number;
+  lastOutcome?: string;
+}
+
+export interface FGSFact {
+  id: string;
+  description: string;
+  /** ≤80 字精简摘要；完整证据在 spill_path（plan §5.3 强制落盘）。 */
+  evidence_summary: string;
+  /** notes/facts/<id>.txt */
+  spill_path: string;
+  superseded?: { by_fact_id?: string; reason: string };
+  /** 引用了已作废 Fact 的 id 列表（§5.3 弱关联，不拦截只标记）。 */
+  weak_refs?: string[];
+  quality?: "normal" | "degraded";
+  created_at: number;
+  created_by: "model" | "user";
+}
+
+export interface FGSFinding {
+  id: string;
+  title: string;
+  severity: "info" | "low" | "medium" | "high" | "critical";
+  data: Record<string, unknown>;
+  evidence_path: string;
+}
+
+export interface FGSHint {
+  id: string;
+  text: string;
+  status: "active" | "addressed" | "rejected";
+  rejection_reason?: string;
+}
+
+export interface FGSGraph {
+  origin: string;
+  goal: string;
+  subgoals: Array<{ id: string; text: string }>;
+  steps: FGSStep[];
+  facts: FGSFact[];
+  findings: FGSFinding[];
+  hints: FGSHint[];
+}
+
+export interface FGSRevision {
+  /** rev-<n>，全局单调递增。 */
+  id: string;
+  parent: string | null;
+  op: string;
+  by: "model" | "user";
+  ts: number;
+  note?: string;
+  /** 该 revision 的完整图快照（不可变）。 */
+  graph: FGSGraph;
+}
+
+export interface FGSBranch {
+  name: string;
+  forkFromRevision?: string;
+  /** 增补：世界残留提取需要知道源分支名（plan 只有 forkFromRevision）。 */
+  forkFromBranch?: string;
+  head: string;
+  revisions: FGSRevision[];
+}
+
+/** fgs.json 根 schema。activeBranch 归 Single-Writer 所有（run.json 只存预算/usage 元数据）。 */
+export interface FGSFile {
+  version: 2;
+  revCounter: number;
+  branches: FGSBranch[];
+  activeBranch: string;
+}
+
+// ---------------------------------------------------------------- projections
+// plan §4.2：纯函数，FGSGraph/FGSFile 进 → prompt 片段出（嵌入 §6.2/6.3 模板）。
+
+/**
+ * 粗估 token：ASCII ≈ 4 字符/token；CJK（汉字/全角标点）≈ 1 字符/token。
+ * R1：纯 len/4 对中文低估 ~3.4×（39 字中文句估 10、实际 ~34），
+ * 投影预算按 budget*4 字符折算时 CJK 场景可超 3×，威胁 Decide Prefill 指标。
+ */
+export const estTokens = (s: string): number => {
+  let cjk = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (
+      (c >= 0x4e00 && c <= 0x9fff) || // CJK 统一汉字
+      (c >= 0x3400 && c <= 0x4dbf) || // 扩展 A
+      (c >= 0xf900 && c <= 0xfaff) || // 兼容汉字
+      (c >= 0x3000 && c <= 0x303f) || // CJK 标点（。、《》等）
+      (c >= 0xff00 && c <= 0xffef) // 全角形（，！？（）等）
+    )
+      cjk++;
+  }
+  return cjk + Math.ceil((s.length - cjk) / 4);
+};
+
+const trunc = (s: string, max: number): string =>
+  s.length <= max ? s : s.slice(0, max) + "…";
+
+const DECIDE_SKELETON_BUDGET = 1500; // tokens
+const EXECUTE_SUBGRAPH_BUDGET = 2500; // tokens
+
+export interface FGSSkeleton {
+  origin: string;
+  goal: string;
+  subgoals: string[];
+  steps: Array<{ id: string; status: string; p: number; t: string }>;
+  facts: Array<{ id: string; d: string; sup: boolean }>;
+  findings: Array<{ id: string; sev: string; t: string }>;
+  hints: string[];
+}
+
+/**
+ * Decide 骨架投影（§4.2，恒定 ≤1.5k tokens）：
+ *  - Fact：仅 id + description(≤50字) + superseded 标记，强制剥离 evidence
+ *  - Step：pending/in_progress + 最近 3 个 done，隐藏 dropped
+ *  - 渐进裁剪：hints → findings → 最近 10 条 facts
+ */
+export function projectDecideSkeleton(g: FGSGraph): string {
+  const budget = DECIDE_SKELETON_BUDGET * 4;
+  const factsOf = (fs: FGSFact[]) =>
+    fs.map((f) => ({ id: f.id, d: trunc(f.description, 50), sup: !!f.superseded }));
+  let sk: FGSSkeleton = {
+    origin: g.origin,
+    goal: g.goal,
+    subgoals: g.subgoals.map((s) => s.text),
+    steps: [
+      ...g.steps
+        .filter((s) => s.status === "pending" || s.status === "in_progress")
+        .sort((a, b) => a.priority - b.priority),
+      ...g.steps.filter((s) => s.status === "done").slice(-3),
+    ].map((s) => ({ id: s.id, status: s.status, p: s.priority, t: s.text })),
+    facts: factsOf(g.facts),
+    findings: g.findings.map((f) => ({ id: f.id, sev: f.severity, t: f.title })),
+    hints: g.hints.filter((h) => h.status === "active").map((h) => h.text),
+  };
+  const size = (x: FGSSkeleton) => JSON.stringify(x).length;
+  if (size(sk) > budget) sk = { ...sk, hints: [] };
+  if (size(sk) > budget) sk = { ...sk, findings: [] };
+  if (size(sk) > budget) sk = { ...sk, facts: factsOf(g.facts.slice(-10)) };
+  let out = JSON.stringify(sk);
+  if (out.length > budget) out = out.slice(0, budget) + "…";
+  return out;
+}
+
+export interface FGSExecuteProjection {
+  goal: string;
+  step: { id: string; text: string; priority: number; attempts: number };
+  facts: Array<{ id: string; d: string; path: string }>;
+}
+
+/**
+ * Execute 局部子图投影（§4.2，恒定 ≤2.5k tokens）：
+ * Goal + 当前 Step + 相关未作废 Facts（origin + 未 superseded，摘要 ≤100 字 +
+ * spill 路径）。超预算时从最旧 fact 开始裁（origin 永保留）。
+ */
+export function projectExecuteSubgraph(g: FGSGraph, step: FGSStep): string {
+  const budget = EXECUTE_SUBGRAPH_BUDGET * 4;
+  const usable = g.facts.filter((f) => !f.superseded);
+  const origin = usable.find((f) => f.id === "f-1") ?? usable[0] ?? null;
+  let rest = usable.filter((f) => f !== origin);
+  const build = (fs: FGSFact[]): string =>
+    JSON.stringify({
+      goal: g.goal,
+      step: {
+        id: step.id,
+        text: step.text,
+        priority: step.priority,
+        attempts: step.attempts,
+      },
+      facts: fs.map((f) => ({
+        id: f.id,
+        d: trunc(f.description, 100),
+        path: f.spill_path,
+      })),
+    } satisfies FGSExecuteProjection);
+  while (origin && rest.length && build([origin, ...rest]).length > budget) {
+    rest = rest.slice(1);
+  }
+  return build(origin ? [origin, ...rest] : rest);
+}
+
+/**
+ * 世界残留提取（§4.2，Fork 防裂脑）：源分支在 Fork 点之后新产生的 fact 描述。
+ * 非 fork 分支或无残留时返回 ""。
+ */
+export function extractWorldResidue(file: FGSFile, branch: FGSBranch): string {
+  if (!branch.forkFromBranch || branch.forkFromBranch === branch.name) return "";
+  const src = file.branches.find((b) => b.name === branch.forkFromBranch);
+  if (!src) return "";
+  const forkRev = branch.revisions.find((r) => r.id === branch.forkFromRevision);
+  const baseIds = new Set((forkRev?.graph.facts ?? []).map((f) => f.id));
+  const srcHead =
+    src.revisions.find((r) => r.id === src.head)?.graph.facts ?? [];
+  const residue = srcHead.filter((f) => !baseIds.has(f.id));
+  if (!residue.length) return "";
+  return [
+    "# 世界残留（不在本分支认知中，但靶机物理状态已改变）",
+    ...residue.map((f) => `- ${f.id}: ${trunc(f.description, 80)}`),
+  ].join("\n");
+}
+
+// ---------------------------------------------------------------- fact helpers
+// plan §5.3：证据落盘 / 弱关联 / 降级提交。纯函数，由 GraphOps 在 applyOp 内应用。
+
+/** 去重键：小写、去非字母数字（含 CJK）、取前 80 字。 */
+export const factDedupKey = (s: string): string =>
+  s.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]/g, "").slice(0, 80);
+
+/**
+ * submit_fact 入图条目构建：
+ *  - evidence_summary = 前 80 字；spill_path = notes/facts/<id>.txt
+ *  - weak_refs = 正文引用（f-\d+）且已 superseded 的 fact id
+ *  - blocks 中的 fact id 被新 fact 标记为 superseded（superseded 链）
+ */
+export function buildFactEntry(args: {
+  id: string;
+  description: string;
+  evidence: string;
+  by: "model" | "user";
+  quality?: "normal" | "degraded";
+  /** 本 fact 作废的既有 fact id 列表。 */
+  blocks?: string[];
+  existing: FGSFact[];
+}): { fact: FGSFact; superseded: Array<{ id: string; by: string }> } {
+  const { id, description, evidence, by, quality, existing } = args;
+  const blocks = args.blocks ?? [];
+  const refs = [...`${description}\n${evidence}`.matchAll(/f-(\d+)/g)].map(
+    (m) => `f-${m[1]}`,
+  );
+  const weak = [...new Set(refs)].filter(
+    (r) => r !== id && existing.some((f) => f.id === r && f.superseded),
+  );
+  const fact: FGSFact = {
+    id,
+    description,
+    evidence_summary: trunc(evidence, 80),
+    spill_path: `notes/facts/${id}.txt`,
+    ...(weak.length ? { weak_refs: weak } : {}),
+    ...(quality ? { quality } : {}),
+    created_at: Date.now(),
+    created_by: by,
+  };
+  const byId = new Map(existing.map((f) => [f.id, f]));
+  const superseded = blocks
+    .filter((b) => b !== id && byId.has(b) && !byId.get(b)!.superseded)
+    .map((b) => ({ id: b, by: id }));
+  return { fact, superseded };
+}
