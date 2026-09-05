@@ -1,0 +1,36 @@
+{
+  "name": "cairn-ui",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Cairn twin-star console (Step 6): vite5 + react-flow + codemirror SPA",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "prebuild": "node scripts/clean.mjs",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@codemirror/language": "^6.10.2",
+    "@codemirror/search": "^6.5.6",
+    "@codemirror/state": "^6.4.1",
+    "@codemirror/view": "^6.34.0",
+    "@fontsource/geist": "^5.2.5",
+    "@xyflow/react": "^12.10.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "zustand": "^5.0.5"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.20",
+    "@types/react-dom": "^18.3.6",
+    "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.4.21",
+    "postcss": "^8.5.3",
+    "tailwindcss": "^3.4.19",
+    "typescript": "^5.5.4",
+    "vite": "^5.4.19"
+  }
+}

@@ -1,0 +1,7 @@
+FACT f-1
+登录页位于 /login，注册页位于 /register。
+
+证据：
+  $ curl -sI https://demo.example.com/
+  HTTP/2 302
+  location: /login

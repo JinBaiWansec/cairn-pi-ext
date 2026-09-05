@@ -1,0 +1,2 @@
+FACT f-4（quality=degraded）
+WAF 对 onload 属性做关键字过滤（403）。证据强度低：仅单次观察。

@@ -1,0 +1,6 @@
+FACT f-2
+/login?next= 参数原样反射进 <title>，未编码。
+
+复现：
+  $ curl -sm 30 "https://demo.example.com/login?next=%3Cscript%3E"
+  <title>next=&lt;script&gt;</title>

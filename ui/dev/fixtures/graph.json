@@ -1,0 +1,239 @@
+{
+  "version": 2,
+  "revCounter": 3,
+  "activeBranch": "main",
+  "branches": [
+    {
+      "name": "main",
+      "head": "rev-3",
+      "revisions": [
+        {
+          "id": "rev-1",
+          "parent": null,
+          "op": "init",
+          "by": "model",
+          "ts": 1788500000000,
+          "note": "初始图",
+          "graph": {
+            "origin": "https://demo.example.com 渗透评估（Step 6 演示）",
+            "goal": "确认目标登录页是否存在可利用的存储型 XSS，并给出复现 PoC",
+            "subgoals": [
+              { "id": "g-1", "text": "枚举登录与注册入口" },
+              { "id": "g-2", "text": "验证反射点并构造载荷" }
+            ],
+            "steps": [
+              { "id": "s-01", "text": "枚举登录与注册入口", "priority": 1, "status": "done", "attempts": 1 },
+              { "id": "s-02", "text": "对候选参数注入探测载荷", "priority": 2, "status": "pending", "attempts": 0 }
+            ],
+            "facts": [
+              {
+                "id": "f-1",
+                "description": "登录页位于 /login，注册页位于 /register",
+                "evidence_summary": "GET / 返回 302 → /login",
+                "spill_path": "notes/facts/f-1.txt",
+                "created_at": 1788500100000,
+                "created_by": "model"
+              }
+            ],
+            "findings": [],
+            "hints": []
+          }
+        },
+        {
+          "id": "rev-2",
+          "parent": "rev-1",
+          "op": "step.drop+fact.add",
+          "by": "model",
+          "ts": 1788500900000,
+          "note": "s-03 超时弃用；补充反射点与低价值 fact",
+          "graph": {
+            "origin": "https://demo.example.com 渗透评估（Step 6 演示）",
+            "goal": "确认目标登录页是否存在可利用的存储型 XSS，并给出复现 PoC",
+            "subgoals": [
+              { "id": "g-1", "text": "枚举登录与注册入口" },
+              { "id": "g-2", "text": "验证反射点并构造载荷" }
+            ],
+            "steps": [
+              { "id": "s-01", "text": "枚举登录与注册入口", "priority": 1, "status": "done", "attempts": 1 },
+              { "id": "s-02", "text": "对候选参数注入探测载荷", "priority": 2, "status": "in_progress", "attempts": 2 },
+              {
+                "id": "s-03",
+                "text": "爬取 sitemap.xml 补充入口",
+                "priority": 3,
+                "status": "dropped",
+                "attempts": 1,
+                "lastOutcome": "timeout: sitemap 抓取 120s 无响应"
+              }
+            ],
+            "facts": [
+              {
+                "id": "f-1",
+                "description": "登录页位于 /login，注册页位于 /register",
+                "evidence_summary": "GET / 返回 302 → /login",
+                "spill_path": "notes/facts/f-1.txt",
+                "created_at": 1788500100000,
+                "created_by": "model"
+              },
+              {
+                "id": "f-2",
+                "description": "/login?next= 参数原样反射进 <title>，未编码",
+                "evidence_summary": "next=<script> 原样出现在响应体",
+                "spill_path": "notes/facts/f-2.txt",
+                "created_at": 1788500500000,
+                "created_by": "model"
+              },
+              {
+                "id": "f-3",
+                "description": "旧版猜测：反射发生在 body 属性中",
+                "evidence_summary": "已被 f-2 定位到 title 标签修正",
+                "spill_path": "notes/facts/f-3.txt",
+                "superseded": { "by_fact_id": "f-2", "reason": "定位更精确，旧假设作废" },
+                "created_at": 1788500300000,
+                "created_by": "model"
+              },
+              {
+                "id": "f-4",
+                "description": "WAF 对 onload 属性做关键字过滤",
+                "evidence_summary": "onload 触发 403",
+                "spill_path": "notes/facts/f-4.txt",
+                "quality": "degraded",
+                "created_at": 1788500700000,
+                "created_by": "model"
+              }
+            ],
+            "findings": [
+              {
+                "id": "fd-1",
+                "title": "登录页存在未编码反射点（疑似 XSS）",
+                "severity": "high",
+                "data": { "url": "/login?next=", "context": "title" },
+                "evidence_path": "notes/facts/f-2.txt"
+              },
+              {
+                "id": "fd-2",
+                "title": "WAF 关键字过滤可被大小写绕过",
+                "severity": "medium",
+                "data": { "waf": "onload→403" },
+                "evidence_path": "notes/facts/f-4.txt"
+              },
+              {
+                "id": "fd-3",
+                "title": "注册邮箱字段未校验格式",
+                "severity": "low",
+                "data": {},
+                "evidence_path": "notes/facts/f-1.txt"
+              }
+            ],
+            "hints": [
+              { "id": "h-1", "text": "优先验证 next 参数的上下文", "status": "addressed" },
+              { "id": "h-2", "text": "检查是否有 CSP 限制", "status": "active" },
+              { "id": "h-3", "text": "尝试 SQL 注入", "status": "rejected", "rejection_reason": "超出 XSS 目标范围" }
+            ]
+          }
+        },
+        {
+          "id": "rev-3",
+          "parent": "rev-2",
+          "op": "step.add",
+          "by": "model",
+          "ts": 1788501200000,
+          "note": "live 演示：追加 pending step，验证坐标锁定",
+          "graph": {
+            "origin": "https://demo.example.com 渗透评估（Step 6 演示）",
+            "goal": "确认目标登录页是否存在可利用的存储型 XSS，并给出复现 PoC",
+            "subgoals": [
+              { "id": "g-1", "text": "枚举登录与注册入口" },
+              { "id": "g-2", "text": "验证反射点并构造载荷" }
+            ],
+            "steps": [
+              { "id": "s-01", "text": "枚举登录与注册入口", "priority": 1, "status": "done", "attempts": 1 },
+              { "id": "s-02", "text": "对候选参数注入探测载荷", "priority": 2, "status": "in_progress", "attempts": 2 },
+              {
+                "id": "s-03",
+                "text": "爬取 sitemap.xml 补充入口",
+                "priority": 3,
+                "status": "dropped",
+                "attempts": 1,
+                "lastOutcome": "timeout: sitemap 抓取 120s 无响应"
+              },
+              { "id": "s-04", "text": "构造绕过 WAF 的存储型载荷", "priority": 4, "status": "pending", "attempts": 0 }
+            ],
+            "facts": [
+              {
+                "id": "f-1",
+                "description": "登录页位于 /login，注册页位于 /register",
+                "evidence_summary": "GET / 返回 302 → /login",
+                "spill_path": "notes/facts/f-1.txt",
+                "created_at": 1788500100000,
+                "created_by": "model"
+              },
+              {
+                "id": "f-2",
+                "description": "/login?next= 参数原样反射进 <title>，未编码",
+                "evidence_summary": "next=<script> 原样出现在响应体",
+                "spill_path": "notes/facts/f-2.txt",
+                "created_at": 1788500500000,
+                "created_by": "model"
+              },
+              {
+                "id": "f-3",
+                "description": "旧版猜测：反射发生在 body 属性中",
+                "evidence_summary": "已被 f-2 定位到 title 标签修正",
+                "spill_path": "notes/facts/f-3.txt",
+                "superseded": { "by_fact_id": "f-2", "reason": "定位更精确，旧假设作废" },
+                "created_at": 1788500300000,
+                "created_by": "model"
+              },
+              {
+                "id": "f-4",
+                "description": "WAF 对 onload 属性做关键字过滤",
+                "evidence_summary": "onload 触发 403",
+                "spill_path": "notes/facts/f-4.txt",
+                "quality": "degraded",
+                "created_at": 1788500700000,
+                "created_by": "model"
+              },
+              {
+                "id": "f-5",
+                "description": "OnLoad 大小写混写可绕过 WAF 关键字匹配",
+                "evidence_summary": "OnLoad 未被过滤，脚本执行",
+                "spill_path": "notes/facts/f-5.txt",
+                "kind": "positive",
+                "created_at": 1788501200000,
+                "created_by": "model"
+              }
+            ],
+            "findings": [
+              {
+                "id": "fd-1",
+                "title": "登录页存在未编码反射点（疑似 XSS）",
+                "severity": "high",
+                "data": { "url": "/login?next=", "context": "title" },
+                "evidence_path": "notes/facts/f-2.txt"
+              },
+              {
+                "id": "fd-2",
+                "title": "WAF 关键字过滤可被大小写绕过",
+                "severity": "medium",
+                "data": { "waf": "onload→403" },
+                "evidence_path": "notes/facts/f-4.txt"
+              },
+              {
+                "id": "fd-3",
+                "title": "注册邮箱字段未校验格式",
+                "severity": "low",
+                "data": {},
+                "evidence_path": "notes/facts/f-1.txt"
+              }
+            ],
+            "hints": [
+              { "id": "h-1", "text": "优先验证 next 参数的上下文", "status": "addressed" },
+              { "id": "h-2", "text": "检查是否有 CSP 限制", "status": "active" },
+              { "id": "h-3", "text": "尝试 SQL 注入", "status": "rejected", "rejection_reason": "超出 XSS 目标范围" }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

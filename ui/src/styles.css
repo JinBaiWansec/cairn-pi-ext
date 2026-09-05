@@ -1,0 +1,223 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* S23 色 token（oklch 冷色；tailwind.config.js 同源）。单一状态色表（S2）：
+   蓝=活动 · 绿=完成 · 琥珀=stalled/degraded · 灰=静置 · 红=error */
+:root {
+  --bg: oklch(0.16 0.01 240);
+  --surface: oklch(0.2 0.015 240);
+  --border: oklch(0.3 0.02 240);
+  --ink: oklch(0.92 0.01 240);
+  --ink-dim: oklch(0.65 0.02 240);
+  --blue: oklch(0.7 0.15 230);
+  --green: oklch(0.75 0.16 150);
+  --amber: oklch(0.8 0.14 80);
+  --red: oklch(0.65 0.2 25);
+  --slate: oklch(0.6 0.02 240);
+  /* S24 缓动统一，禁 bounce/elastic */
+  --ease: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: Geist, ui-sans-serif, system-ui, sans-serif; /* S22 */
+  font-size: 12px; /* S23：12 顶栏与流正文 */
+  -webkit-font-smoothing: antialiased;
+}
+
+/* S23：所有数字位 tabular */
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+
+/* S25：emoji 一律 14px、不染色、不缩放 */
+.emoji {
+  font-size: 14px;
+  line-height: 1;
+  vertical-align: -1px;
+}
+
+/* ── S24 动效预算 ──────────────────────────────────────────── */
+/* 呼吸灯：仅 in_progress 节点 + STALLED 顶栏灯，2.4s ease-in-out 循环 */
+@keyframes breathe {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+.breathe {
+  animation: breathe 2.4s ease-in-out infinite;
+}
+
+/* S7 halo 脉冲：状态色低透明度 box-shadow 单层，2 次（S26 禁彩色 blob 渐变） */
+@keyframes halo {
+  0% {
+    box-shadow: 0 0 0 0 rgba(110, 170, 255, 0);
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgba(110, 170, 255, 0.25);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(110, 170, 255, 0);
+  }
+}
+.halo {
+  animation: halo 0.6s var(--ease) 2;
+}
+
+/* S13 skeleton shimmer（非旋转 spinner） */
+@keyframes shimmer {
+  0% {
+    background-position: -200px 0;
+  }
+  100% {
+    background-position: 200px 0;
+  }
+}
+.skeleton {
+  background: linear-gradient(90deg, var(--surface) 25%, oklch(0.24 0.015 240) 50%, var(--surface) 75%);
+  background-size: 400px 100%;
+  animation: shimmer 1.2s linear infinite;
+  border-radius: 4px;
+}
+
+/* 打字机光标（S21：reduced-motion 下停动画） */
+@keyframes caret {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+.caret::after {
+  content: "▍";
+  color: var(--blue);
+  animation: caret 1s step-end infinite;
+}
+
+/* S16 disabled 控制按钮 tooltip（CSS ::after，200ms 淡入） */
+.btn-step7 {
+  position: relative;
+  cursor: not-allowed;
+}
+.btn-step7::after {
+  content: "Step 7 启用 — 需 /ext/cairn/api 接线";
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  white-space: nowrap;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-size: 11px;
+  color: var(--ink-dim);
+  opacity: 0;
+  transition: opacity 200ms var(--ease);
+  pointer-events: none;
+  z-index: 50;
+}
+.btn-step7:hover::after {
+  opacity: 1;
+}
+
+/* S6 分割条 hover 变蓝（200ms 常规） */
+.splitter {
+  transition: background 200ms var(--ease);
+}
+.splitter:hover,
+.splitter.active {
+  background: var(--blue);
+}
+
+/* S18 抽屉（translateX，200ms 常规） */
+.drawer {
+  transition: transform 200ms var(--ease);
+}
+
+/* §6.5 CodeMirror 只读抽屉（S22：代码用系统 mono 栈） */
+.cm-editor {
+  height: 100%;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+.cm-editor .cm-scroller {
+  line-height: 1.6;
+}
+.cm-editor .cm-gutters {
+  background: var(--bg);
+  border: none;
+  color: var(--ink-dim);
+}
+.cm-editor .cm-panels {
+  background: var(--surface);
+  color: var(--ink);
+  border-color: var(--border);
+  font-size: 12px;
+}
+
+/* 通用小按钮 hover/focus（S17 七态词汇：focus 用 2px 蓝 ring，不依赖颜色单通道） */
+.ctl {
+  min-height: 32px; /* S20 触控目标 */
+  transition:
+    background 120ms var(--ease),
+    border-color 120ms var(--ease);
+}
+.ctl:hover:not(:disabled) {
+  background: oklch(0.24 0.015 240);
+}
+.ctl:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 1px;
+}
+.ctl:active:not(:disabled) {
+  background: oklch(0.18 0.015 240);
+}
+.ctl:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+/* S21：页面隐藏时暂停全部循环动画 */
+.anim-paused * {
+  animation-play-state: paused !important;
+}
+
+/* S21 reduced-motion 替代路径：呼吸灯→静态高亮边框；抽屉/halo 过渡归 0；
+   打字机保留（内容非装饰）但光标停；循环动画暂停 */
+@media (prefers-reduced-motion: reduce) {
+  .breathe {
+    animation: none;
+    opacity: 1;
+  }
+  .halo {
+    animation: none;
+  }
+  .skeleton {
+    animation: none;
+  }
+  .caret::after {
+    animation: none;
+  }
+  .drawer,
+  .splitter {
+    transition: none;
+  }
+}

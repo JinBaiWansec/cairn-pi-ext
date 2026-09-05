@@ -1,0 +1,7 @@
+{"ts": 1788500200000, "activityId": "act-001", "kind": "decide", "type": "prompt", "systemPrompt": "你是 Cairn Decide 节点：基于当前图与预算，决定下一步 step。", "userPrompt": "当前图：1 done step、1 pending step。预算 executes 3/8。请决定下一步。", "turn": 1}
+{"ts": 1788500205000, "activityId": "act-001", "kind": "decide", "type": "text_delta", "delta": "当前图已有 s-01 done、s-02 pending。", "turn": 1}
+{"ts": 1788500206000, "activityId": "act-001", "kind": "decide", "type": "text_delta", "delta": "预算充足（3/8），维持 s-02 执行并追加 s-03 探测入口。", "turn": 1}
+{"ts": 1788500210000, "activityId": "act-001", "kind": "decide", "type": "assistant", "text": "当前图已有 s-01 done、s-02 pending。预算充足（3/8），维持 s-02 执行并追加 s-03 探测入口。", "turn": 1, "usage": {"input": 1200, "output": 220, "cacheRead": 0, "cacheWrite": 0}}
+{"ts": 1788500212000, "activityId": "act-001", "kind": "decide", "type": "tool_call", "name": "bash", "args": {"command": "grep -rn 'login' src/ | head -5"}, "toolCallId": "tc-001", "turn": 2}
+{"ts": 1788500218000, "activityId": "act-001", "kind": "decide", "type": "tool_result", "name": "bash", "toolCallId": "tc-001", "ok": true, "output": "src/login.ts:12:  const next = req.query.next;\nsrc/login.ts:30:  res.redirect(next);\n", "turn": 2}
+{"ts": 1788500230000, "activityId": "act-001", "kind": "decide", "type": "end", "reason": "complete", "turn": 2}

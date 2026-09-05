@@ -1,0 +1,2 @@
+FACT f-3（superseded by f-2）
+旧版猜测：反射发生在 body 属性中。
