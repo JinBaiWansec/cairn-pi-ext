@@ -559,8 +559,8 @@ export default function cairnExtension(pi: ExtensionAPI): void {
 
       ctx.ui.notify(
         resumed
-          ? `cairn RESUMED (existing fgs.json) | console: ${uiUrl()}`
-          : `cairn started | console: ${uiUrl()}`,
+          ? `cairn RESUMED | workspace: ${workspace} | console: ${uiUrl()}`
+          : `cairn started | workspace: ${workspace} | console: ${uiUrl()}`,
         "info",
       );
 
@@ -578,10 +578,35 @@ export default function cairnExtension(pi: ExtensionAPI): void {
 
   // PLAN §7: at session_start, hint that an existing workspace can resume.
   pi.on("session_start", (_event, ctx) => {
-    if (GraphOps.exists(resolve(ctx.cwd, "cairn-workspace")))
-      ctx.ui.notify(
-        "cairn: workspace exists — /cairn run will RESUME it",
-        "info",
-      );
+    const ws = resolve(ctx.cwd, "cairn-workspace");
+    if (!GraphOps.exists(ws)) return;
+    ctx.ui.notify(
+      "cairn: workspace exists — /cairn run will RESUME it",
+      "info",
+    );
+    // UI 常开：无活 server 时先挂「离线快照」模式（磁盘 fgs/run.json + status.stale=true），
+    // 避免两次 run 之间 8377 无人监听、UI 看起来像被新建
+    if (!live) {
+      startCairnServer({
+        runDir: ws,
+        ops: GraphOps.load(ws),
+        // SAFETY: 离线快照桩——HTTP 层只读 engine.running（false）与 engine.currentActivityId（undefined），不触发引擎方法
+        engine: { running: false } as unknown as CairnEngine,
+      })
+        .then((h) => {
+          if (live) h.close(); // /cairn run 抢先绑定过 → 弃掉本实例
+          else {
+            live = h;
+            rememberLog(
+              `[cairn] ui attached (offline snapshot): port ${h.port}`,
+            );
+          }
+        })
+        .catch((e) =>
+          rememberLog(
+            `[cairn] ui attach failed: ${e instanceof Error ? e.message : e}`,
+          ),
+        );
+    }
   });
 }
