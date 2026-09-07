@@ -1,29 +1,42 @@
 /**
- * index.ts — pi extension entry (PLAN.md §5).
+ * index.ts — pi extension entry (carin_plan §2.1, Step 7 重写).
  *
- *   /cairn run <origin> <goal>  -> start engine in background (D3), UI server
+ *   /cairn run <origin> <goal>  -> start engine in background + UI server
  *   /cairn abort                -> request graceful abort
  *   /cairn status               -> last log lines
  *
- * UI server (node:http, port 8377 / CAIRN_UI_PORT):
- *   GET  /        -> ui/index.html (single file, polls /graph every 2s)
- *   GET  /graph   -> fgs.json contents (fresh read per request)
- *   POST /hints   -> {"text": "..."} appended to the engine's live graph
+ * UI server (node:http, 0.0.0.0:8377 / CAIRN_UI_HOST+CAIRN_UI_PORT):
+ *   GET  /                      -> 302 /ext/cairn/
+ *   GET  /ext/cairn/*           -> ui/ 构建产物（SPA fallback；assets/ = immutable）
+ *   GET  /ext/cairn/api/graph|status|transcript|file
+ *   GET  /ext/cairn/api/events  -> SSE（transcript/graph/status 三源广播，D3/D4）
+ *   POST /ext/cairn/api/ops|branch|checkout
  */
 
 import { createServer, type Server, type ServerResponse } from "node:http";
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { dirname, extname, join, resolve } from "node:path";
+import { dirname, extname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { CairnEngine, startEngine } from "./engine.js";
+import {
+  CairnEngine,
+  startEngine,
+  type RunMeta,
+} from "./engine.js";
 import { loadConfig } from "./config.js";
 import { GraphOps } from "./graphops.js";
+import {
+  onTranscriptEvent,
+  readTranscript,
+  type TranscriptEvent,
+} from "./transcript.js";
 import type { FGSGraph } from "./graph.js";
 
+const HOST = process.env.CAIRN_UI_HOST ?? "0.0.0.0";
 const PORT = Number(process.env.CAIRN_UI_PORT ?? 8377);
+const PREFIX = "/ext/cairn";
+const MB = 1024 * 1024;
 
-// Step 5：envCfg 旧 API 删除 —— 配置统一走 config.ts loadConfig()（CAIRN_* env 覆盖内置）。
 const UI_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..", "ui");
 
 const MIME: Record<string, string> = {
@@ -34,29 +47,382 @@ const MIME: Record<string, string> = {
   ".svg": "image/svg+xml",
   ".png": "image/png",
   ".ico": "image/x-icon",
+  ".woff": "font/woff",
+  ".woff2": "font/woff2",
 };
 
-/** Serve a GET path from the ui/ directory (e.g. /cytoscape.min.js). */
-function serveStatic(url: string, res: ServerResponse): boolean {
-  const p = resolve(join(UI_DIR, url));
-  if (!p.startsWith(UI_DIR) || !existsSync(p) || !statSync(p).isFile())
-    return false;
+/** 带状态码的端点错误（400 参数 / 404 资源 / 409 状态冲突） */
+class HttpError extends Error {
+  constructor(
+    readonly code: number,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+function sendJson(res: ServerResponse, code: number, body: unknown): void {
+  res.writeHead(code, { "content-type": "application/json" });
+  res.end(JSON.stringify(body));
+}
+
+// ---------------------------------------------------------------- 路由件
+
+/** /ext/cairn/<rest> → ui/ 产物；无扩展名缺失 → SPA fallback（index.html no-cache） */
+function serveUi(rest: string, res: ServerResponse): void {
+  const rel = decodeURIComponent(rest.replace(/^\//, ""));
+  const p = resolve(join(UI_DIR, rel));
+  if (!p.startsWith(UI_DIR)) {
+    sendJson(res, 400, { error: "bad path" });
+    return;
+  }
+  if (existsSync(p) && statSync(p).isFile()) {
+    const headers: Record<string, string> = {
+      "content-type": MIME[extname(p)] ?? "application/octet-stream",
+      // hash 名产物 = immutable；index.html 等入口 = no-cache
+      "cache-control": p.startsWith(join(UI_DIR, "assets") + sep)
+        ? "public, max-age=31536000, immutable"
+        : "no-cache",
+    };
+    res.writeHead(200, headers);
+    res.end(readFileSync(p));
+    return;
+  }
+  if (extname(p) !== "") {
+    res.writeHead(404);
+    res.end();
+    return;
+  }
   res.writeHead(200, {
-    "content-type": MIME[extname(p)] ?? "application/octet-stream",
+    "content-type": "text/html; charset=utf-8",
+    "cache-control": "no-cache",
   });
-  res.end(readFileSync(p));
-  return true;
+  res.end(readFileSync(join(UI_DIR, "index.html"), "utf8"));
 }
 
-let uiServer: Server | null = null;
-let uiPort = PORT;
+/** D8：run.json 新鲜读取 + engine 活体字段 → Status（null = 无 run.json → 404） */
+function buildStatus(
+  runDir: string,
+  ops: GraphOps,
+  engine: CairnEngine,
+): Record<string, unknown> | null {
+  const f = join(runDir, "run.json");
+  if (!existsSync(f)) return null;
+  let m: RunMeta;
+  try {
+    m = JSON.parse(readFileSync(f, "utf8")) as RunMeta;
+  } catch (e) {
+    // 半写 → 500（§7：UI setOffline 下轮自愈）
+    throw new HttpError(
+      500,
+      `run.json unreadable: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+  const active = ops.headGraph().steps.find((s) => s.status === "in_progress");
+  return {
+    running: engine.running,
+    state: m.state,
+    endReason: m.endReason,
+    activeBranch: ops.data.activeBranch,
+    rev: ops.activeBranch.head,
+    ...(active ? { activeStepId: active.id } : {}),
+    budget: {
+      executes: m.budget.executes,
+      decides: m.budget.decides,
+      maxExecutes: m.config.maxExecutes,
+    },
+    usage: m.usage,
+    elapsedMs: m.endedAt
+      ? m.endedAt - m.startedAt
+      : Date.now() - m.startedAt,
+    ...(engine.currentActivityId
+      ? { currentActivityId: engine.currentActivityId }
+      : {}),
+  };
+}
+
+/** D7 add_hint：h-N 编号逻辑（原 /hints 端点抽出） */
+function addHint(ops: GraphOps, text: string): void {
+  ops.applyOp("add_hint", "user", (draft: FGSGraph) => {
+    const n =
+      draft.hints.reduce((m, h) => Math.max(m, Number(h.id.slice(2)) || 0), 0) + 1;
+    draft.hints.push({ id: `h-${n}`, text, status: "active" });
+  });
+}
+
+function handleGet(
+  runDir: string,
+  ops: GraphOps,
+  engine: CairnEngine,
+  rest: string,
+  q: URLSearchParams,
+  res: ServerResponse,
+): void {
+  switch (rest) {
+    case "/api/graph": {
+      const f = join(runDir, "fgs.json");
+      if (!existsSync(f)) throw new HttpError(404, "no fgs.json");
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(readFileSync(f, "utf8"));
+      return;
+    }
+    case "/api/status": {
+      const s = buildStatus(runDir, ops, engine);
+      if (!s) throw new HttpError(404, "no run.json (never run)");
+      sendJson(res, 200, s);
+      return;
+    }
+    case "/api/transcript": {
+      const activity = q.get("activity");
+      if (!activity) throw new HttpError(400, "missing activity");
+      const offset = Number(q.get("offset") ?? 0) || 0;
+      let page: { events: TranscriptEvent[]; nextOffset: number };
+      try {
+        page = readTranscript(runDir, activity, offset);
+      } catch (e) {
+        throw new HttpError(404, e instanceof Error ? e.message : String(e));
+      }
+      sendJson(res, 200, page);
+      return;
+    }
+    case "/api/file": {
+      const rel = q.get("path");
+      if (!rel) throw new HttpError(400, "missing path");
+      const p = resolve(runDir, rel);
+      const notes = join(runDir, "notes") + sep;
+      if (!p.startsWith(notes))
+        throw new HttpError(400, "path outside notes/");
+      if (!existsSync(p)) throw new HttpError(404, "no such file");
+      const buf = readFileSync(p);
+      const offset = Number(q.get("offset") ?? 0) || 0;
+      sendJson(res, 200, {
+        content: buf.subarray(offset, offset + MB).toString("utf8"),
+        size: buf.length,
+      });
+      return;
+    }
+    case "/api/events": {
+      // D4：连接池 + 心跳（25s）；新连接不发历史（UI onopen 自对账）
+      res.writeHead(200, {
+        "content-type": "text/event-stream",
+        "connection": "keep-alive",
+        "cache-control": "no-cache",
+      });
+      res.flushHeaders(); // Node 24：writeHead 不主动发头，首帧/心跳前必须显式 flush
+      const clients = sseClients!;
+      clients.add(res);
+      res.on("close", () => clients.delete(res));
+      return;
+    }
+    default:
+      throw new HttpError(404, `no route ${rest}`);
+  }
+}
+
+/** D4：SSE 连接池（handleGet 内引用；startCairnServer 注入） */
+let sseClients: Set<ServerResponse> | null = null;
+
+function handlePost(
+  ops: GraphOps,
+  engine: CairnEngine,
+  rest: string,
+  req: import("node:http").IncomingMessage,
+  res: ServerResponse,
+): void {
+  let body = "";
+  req.on("data", (c) => (body += c));
+  req.on("end", () => {
+    try {
+      const parsed = JSON.parse(body || "{}") as Record<string, unknown>;
+      switch (rest) {
+        case "/api/ops": {
+          const op = parsed.op;
+          const args = (parsed.args ?? {}) as Record<string, unknown>;
+          if (op === "add_hint") {
+            const text = args.text;
+            if (typeof text !== "string" || !text.trim())
+              throw new HttpError(400, "args.text must be non-empty");
+            addHint(ops, text.trim());
+          } else if (op === "abort" || op === "pause" || op === "resume") {
+            if (!engine.running)
+              throw new HttpError(409, "no cairn engine running");
+            engine[op]();
+          } else {
+            throw new HttpError(400, `unknown op ${String(op)}`);
+          }
+          sendJson(res, 200, { ok: true });
+          return;
+        }
+        case "/api/branch": {
+          const name = parsed.name;
+          if (typeof name !== "string" || !name.trim())
+            throw new HttpError(400, "name required");
+          try {
+            ops.forkBranch(
+              name.trim(),
+              parsed.from as string | undefined,
+              parsed.at as string | undefined,
+            );
+          } catch (e) {
+            throw new HttpError(
+              400,
+              e instanceof Error ? e.message : String(e),
+            );
+          }
+          sendJson(res, 200, { ok: true });
+          return;
+        }
+        case "/api/checkout": {
+          const branch = parsed.branch;
+          if (typeof branch !== "string" || !branch.trim())
+            throw new HttpError(400, "branch required");
+          try {
+            ops.checkout(branch.trim());
+          } catch (e) {
+            throw new HttpError(
+              400,
+              e instanceof Error ? e.message : String(e),
+            );
+          }
+          sendJson(res, 200, { ok: true });
+          return;
+        }
+        default:
+          throw new HttpError(404, `no route ${rest}`);
+      }
+    } catch (e) {
+      if (e instanceof HttpError) sendJson(res, e.code, { error: e.message });
+      else sendJson(res, 500, { error: String(e) });
+    }
+  });
+}
+
+// ---------------------------------------------------------------- server
+
+export interface CairnServerHandle {
+  port: number;
+  close: () => void;
+}
+
+/** 当前存活 server（/cairn run 重绑定前 close 旧实例） */
+let live: CairnServerHandle | null = null;
+
+/** D11：/cairn run 与测试共用同一装配；HTTP 层不依赖 ExtensionAPI。 */
+export function startCairnServer(opts: {
+  runDir: string;
+  ops: GraphOps;
+  engine: CairnEngine;
+  port?: number;
+}): Promise<CairnServerHandle> {
+  const { runDir, ops, engine } = opts;
+  const clients = new Set<ServerResponse>();
+  sseClients = clients;
+
+  // D4：写失败 = 慢消费者，直接丢弃该连接（无背压队列）
+  const broadcast = (frame: unknown): void => {
+    const data = `data: ${JSON.stringify(frame)}\n\n`;
+    for (const r of clients) {
+      try {
+        r.write(data);
+      } catch {
+        clients.delete(r);
+      }
+    }
+  };
+  // D3：三源订阅
+  onTranscriptEvent((ev: TranscriptEvent) =>
+    broadcast({ type: "transcript", event: ev }),
+  );
+  ops.onGraphChange((rev, branch) => broadcast({ type: "graph", rev, branch }));
+  engine.onStatus(() => {
+    const s = buildStatus(runDir, ops, engine);
+    if (s) broadcast({ type: "status", status: s });
+  });
+  const heartbeat = setInterval(() => {
+    for (const r of clients) {
+      try {
+        r.write(": ping\n\n");
+      } catch {
+        clients.delete(r);
+      }
+    }
+  }, 25_000);
+
+  const server: Server = createServer((req, res) => {
+    const raw = req.url ?? "/";
+    const path = raw.split("?")[0];
+    try {
+      if (path === "/") {
+        res.writeHead(302, { location: `${PREFIX}/` });
+        res.end();
+        return;
+      }
+      if (!path.startsWith(PREFIX)) {
+        res.writeHead(404);
+        res.end();
+        return;
+      }
+      const rest = path.slice(PREFIX.length);
+      if (rest.startsWith("/api/")) {
+        if (req.method === "GET") {
+          handleGet(
+            runDir,
+            ops,
+            engine,
+            rest,
+            new URLSearchParams(raw.split("?")[1] ?? ""),
+            res,
+          );
+          return;
+        }
+        if (req.method === "POST") {
+          return handlePost(ops, engine, rest, req, res);
+        }
+        res.writeHead(405);
+        res.end();
+        return;
+      }
+      if (req.method !== "GET") {
+        res.writeHead(405);
+        res.end();
+        return;
+      }
+      serveUi(rest, res);
+    } catch (e) {
+      sendJson(
+        res,
+        e instanceof HttpError ? e.code : 500,
+        { error: e instanceof Error ? e.message : String(e) },
+      );
+    }
+  });
+  server.on("error", (e) =>
+    rememberLog(`[cairn] ui server error: ${e.message} (engine unaffected)`),
+  );
+
+  const close = (): void => {
+    clearInterval(heartbeat);
+    for (const r of clients) r.end();
+    clients.clear();
+    server.close();
+    server.closeAllConnections(); // SSE 长连接不得拖住进程退出
+    if (live === handle) live = null;
+    rememberLog("[cairn] ui server stopped");
+  };
+
+  const handle: CairnServerHandle = { port: 0, close };
+  return new Promise((ok, err) => {
+    server.once("error", err);
+    server.listen(opts.port ?? PORT, HOST, () => {
+      handle.port = (server.address() as { port: number }).port;
+      ok(handle);
+    });
+  });
+}
+
+// ---------------------------------------------------------------- 命令层
+
 const logRing: string[] = [];
-/** Engine lifecycle state exposed to the UI via GET /status. */
-const engineState = { running: false, reason: null as string | null };
-
-function uiUrl(): string {
-  return `http://127.0.0.1:${uiPort}/`;
-}
 
 function rememberLog(line: string): void {
   logRing.push(line);
@@ -64,106 +430,9 @@ function rememberLog(line: string): void {
   console.log(line);
 }
 
-export function setUiWorkspace(p: string): void {
-  uiWorkspace = p;
+function uiUrl(): string {
+  return `http://127.0.0.1:${live?.port ?? PORT}${PREFIX}/`;
 }
-
-export function closeUiServer(): void {
-  if (!uiServer) return;
-  uiServer.close();
-  uiServer = null;
-  rememberLog("[cairn] ui server stopped");
-}
-
-/** Step 5：ensureUiServer 改收 GraphOps（/graph 读 fgs.json 原文，/hints 走 applyOp）。 */
-export function ensureUiServer(ops: GraphOps): void {
-  if (uiServer) return;
-  uiServer = createServer((req, res) => {
-    const url = (req.url ?? "/").split("?")[0];
-    try {
-      if (req.method === "GET" && (url === "/" || url === "/index.html")) {
-        res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-        res.end(readFileSync(join(UI_DIR, "index.html"), "utf8"));
-      } else if (req.method === "GET" && url === "/graph") {
-        const f = join(uiWorkspace, "fgs.json");
-        res.writeHead(existsSync(f) ? 200 : 404, {
-          "content-type": "application/json",
-        });
-        res.end(existsSync(f) ? readFileSync(f, "utf8") : "null");
-      } else if (req.method === "POST" && url === "/hints") {
-        let body = "";
-        req.on("data", (c) => (body += c));
-        req.on("end", () => {
-          try {
-            const { text } = JSON.parse(body || "{}") as { text?: unknown };
-            if (typeof text !== "string" || !text.trim())
-              throw new Error('body must be {"text": "<non-empty>"}');
-            // Step 5：injectHint → Single-Writer applyOp（add_hint, by=user）
-            ops.applyOp("add_hint", "user", (draft: FGSGraph) => {
-              const n =
-                draft.hints.reduce(
-                  (m, h) => Math.max(m, Number(h.id.slice(2)) || 0),
-                  0,
-                ) + 1;
-              draft.hints.push({
-                id: `h-${n}`,
-                text: text.trim(),
-                status: "active",
-              });
-            });
-            rememberLog(`[cairn] hint injected: ${text.slice(0, 80)}`);
-            res.writeHead(200, { "content-type": "application/json" });
-            res.end(JSON.stringify({ ok: true }));
-          } catch (e) {
-            res.writeHead(400, { "content-type": "application/json" });
-            res.end(JSON.stringify({ error: String(e) }));
-          }
-        });
-      } else if (req.method === "GET" && url === "/status") {
-        res.writeHead(200, { "content-type": "application/json" });
-        res.end(
-          JSON.stringify({
-            running: engineState.running,
-            reason: engineState.reason,
-            port: uiPort,
-          }),
-        );
-      } else if (req.method === "GET" && url === "/log") {
-        res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify(logRing.slice(-100)));
-      } else if (req.method === "POST" && url === "/abort") {
-        const eng = CairnEngine.running;
-        if (eng) {
-          eng.abort();
-          res.writeHead(200, { "content-type": "application/json" });
-          res.end(JSON.stringify({ ok: true }));
-        } else {
-          res.writeHead(409, { "content-type": "application/json" });
-          res.end(JSON.stringify({ error: "no cairn engine running" }));
-        }
-      } else if (req.method === "GET" && serveStatic(url, res)) {
-        // served above
-      } else {
-        res.writeHead(404);
-        res.end();
-      }
-    } catch (e) {
-      res.writeHead(500, { "content-type": "application/json" });
-      res.end(JSON.stringify({ error: String(e) }));
-    }
-  });
-  uiServer.on("error", (e) =>
-    rememberLog(`[cairn] ui server error: ${e.message} (engine unaffected)`),
-  );
-  uiServer.listen(PORT, () => {
-    uiPort = (uiServer?.address() as { port: number }).port;
-    rememberLog(`[cairn] ui server at ${uiUrl()}`);
-  });
-}
-
-// workspace of the live graph: /graph peeks the file, /hints mutates the
-// engine's in-memory instance (single writer, so no stale-copy race).
-let uiWorkspace = "";
 
 export default function cairnExtension(pi: ExtensionAPI): void {
   pi.registerCommand("cairn", {
@@ -243,10 +512,7 @@ export default function cairnExtension(pi: ExtensionAPI): void {
 
       const workspace = resolve(ctx.cwd, "cairn-workspace");
       const resumed = GraphOps.exists(workspace);
-      uiWorkspace = workspace;
-      // Rebind the UI server to this run's ops instance (the previous
-      // run's /hints closure would otherwise mutate a stale copy).
-      closeUiServer();
+      live?.close(); // 重绑定（旧 run 的 ops 闭包不得存活）
 
       let started;
       try {
@@ -268,27 +534,33 @@ export default function cairnExtension(pi: ExtensionAPI): void {
         );
         return;
       }
-      ensureUiServer(started.ops);
-      engineState.running = true;
-      engineState.reason = null;
+      try {
+        live = await startCairnServer({
+          runDir: workspace,
+          ops: started.ops,
+          engine: started.engine,
+        });
+      } catch (e) {
+        rememberLog(
+          `[cairn] ui server failed: ${e instanceof Error ? e.message : String(e)} (engine unaffected)`,
+        );
+      }
 
       ctx.ui.notify(
         resumed
-          ? `cairn RESUMED (existing fgs.json) | graph: ${uiUrl()}`
-          : `cairn started | graph: ${uiUrl()}`,
+          ? `cairn RESUMED (existing fgs.json) | console: ${uiUrl()}`
+          : `cairn started | console: ${uiUrl()}`,
         "info",
       );
 
       // D3: return immediately; the engine runs in the background.
       void started.done.then((reason) => {
-        engineState.running = false;
-        engineState.reason = reason;
         ctx.ui.notify(`cairn finished: reason=${reason}`, "info");
         ctx.ui.setWidget("cairn", [
           `cairn ended reason=${reason} | ui: ${uiUrl()} | logs: /cairn status`,
         ]);
         // Keep the UI server open so the final graph can be reviewed;
-        // the next /cairn run rebinds it (closeUiServer above).
+        // the next /cairn run rebinds it (live?.close() above).
       });
     },
   });

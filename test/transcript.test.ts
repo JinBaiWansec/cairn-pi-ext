@@ -3,10 +3,10 @@
  * Run: node test/run.mjs transcript
  */
 import assert from "node:assert";
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Transcript, __resetTranscriptStateForTest, onTranscriptEvent, ringTail } from "../src/transcript.js";
+import { Transcript, __resetTranscriptStateForTest, onTranscriptEvent, readTranscript, ringTail } from "../src/transcript.js";
 import type { TranscriptEvent } from "../src/transcript.js";
 
 const dir = mkdtempSync(join(tmpdir(), "cairn-transcript-"));
@@ -93,6 +93,31 @@ try {
       .map((l) => (JSON.parse(l) as TranscriptEvent).type);
     assert.deepEqual(seen.map((e) => e.type), fileTypes, "listener 与文件同序");
     t.close();
+  }
+
+  // ── 场景 6：readTranscript offset 分页 / 坏行占位 / 无文件抛错（Step 7）──
+  {
+    __resetTranscriptStateForTest();
+    const d = sub("s6");
+    const t = Transcript.open(d, "decide", undefined, "act-777");
+    for (let i = 0; i < 10; i++) t.append({ n: i });
+    t.close();
+    // 手工插一条坏行（序号 5：跳过但仍占序号）
+    const p = join(d, "transcripts", "act-777-decide.jsonl");
+    const lines = readFileSync(p, "utf8").split("\n");
+    lines[5] = "not-json";
+    writeFileSync(p, lines.join("\n"));
+    const full = readTranscript(d, "act-777");
+    assert.equal(full.events.length, 9, "坏行被跳过");
+    assert.equal(full.nextOffset, 10, "坏行仍占序号");
+    const p1 = readTranscript(d, "act-777", 7);
+    assert.equal(p1.events.length, 3, "offset 切片");
+    assert.equal(p1.events[0]["n"], 7);
+    assert.equal(p1.nextOffset, 10, "nextOffset = 总行数，不随 offset 变");
+    const lim = readTranscript(d, "act-777", 0, 4);
+    assert.equal(lim.events.length, 4, "limit 截断");
+    assert.throws(() => readTranscript(d, "act-404"), /not found/);
+    assert.throws(() => readTranscript(d, "act-7"), /not found/); // 前缀不得误匹配 act-777
   }
 } finally {
   rmSync(dir, { recursive: true, force: true });

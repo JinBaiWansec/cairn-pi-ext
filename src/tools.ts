@@ -420,6 +420,11 @@ function findStep(g: FGSGraph, id: string): FGSStep {
 const GRAPH_OPS = {
   add_step(g: FGSGraph, text: string, priority?: number, addressesHint?: string): string {
     if (!text.trim()) throw new Error("step text 不可为空");
+    let h: { id: string; status: string } | undefined;
+    if (addressesHint) {
+      h = g.hints.find((x) => x.id === addressesHint);
+      if (!h) throw new Error(`unknown hint id: ${addressesHint}`);
+    }
     const id = `s-${maxNumId(g.steps.map((s) => s.id), "s") + 1}`;
     g.steps.push({
       id,
@@ -429,7 +434,9 @@ const GRAPH_OPS = {
       attempts: 0,
       ...(addressesHint ? { addresses_hint: addressesHint } : {}),
     });
-    return `step ${id} added`;
+    // 落实即闭环：否则 hint 永远 active，下一轮 decide 重复出现只能 reject（e2e 实测）
+    if (h) h.status = "addressed";
+    return `step ${id} added${addressesHint ? ` (hint ${addressesHint} → addressed)` : ""}`;
   },
   drop_step(g: FGSGraph, id: string, reason: string): string {
     const s = findStep(g, id);
@@ -562,7 +569,7 @@ export interface ToolDef {
 export const DECIDE_TOOLS: ToolDef[] = [
   {
     name: "add_step",
-    description: "添加一个待执行的 Step（战术单元）。priority 数字越小越先执行（默认 50）。addresses_hint 可选：本 step 落实哪条 hint。",
+    description: "添加一个待执行的 Step（战术单元）。priority 数字越小越先执行（默认 50）。addresses_hint 可选：本 step 落实哪条 hint（该 hint 随即标记 addressed 闭环；采纳提示优先用此，reject_hint 仅用于无需落实的提示）。",
     parameters: Type.Object({
       text: Type.String({ description: "step 目标描述" }),
       priority: Type.Optional(Type.Number({ description: "优先级，越小越先" })),

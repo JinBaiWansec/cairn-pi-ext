@@ -12,8 +12,11 @@ import { join } from "node:path";
 import {
   createProvider,
   type Api,
+  type ApiStreamOptions,
+  type Context,
   type Model,
   type Provider,
+  type SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
 import {
   stream as ocStream,
@@ -133,7 +136,7 @@ export function getProvider(): Provider {
   const ids = [cfg.model, cfg.decideModel].filter(
     (v, i, a) => v && a.indexOf(v) === i,
   );
-  providerInstance = createProvider({
+  const raw = createProvider({
     id: "cairn",
     name: "cairn",
     baseUrl: cfg.baseUrl,
@@ -146,6 +149,15 @@ export function getProvider(): Provider {
     models: ids.map((id) => makeModel(id, cfg)),
     api: { stream: ocStream, streamSimple: ocStreamSimple },
   });
+  // createProvider 的 stream 不做 auth 解析（那是 Models 层的活）；cairn 直接
+  // 调 provider.streamSimple，故在此把 cairn.json 的 apiKey 注入流选项。
+  providerInstance = {
+    ...raw,
+    stream: (model: Model<Api>, context: Context, options?: ApiStreamOptions<Api>) =>
+      raw.stream<Api>(model, context, { apiKey: cfg.apiKey, ...options }),
+    streamSimple: (model: Model<Api>, context: Context, options?: SimpleStreamOptions) =>
+      raw.streamSimple(model, context, { apiKey: cfg.apiKey, ...options }),
+  };
   return providerInstance;
 }
 

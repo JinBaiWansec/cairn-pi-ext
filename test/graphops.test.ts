@@ -80,29 +80,29 @@ try {
   assert.ok(residue.includes("世界残留"));
 
   // alt 上的变更不污染 main
-  re.switchBranch("alt");
+  re.checkout("alt");
   re.applyOp("drop_step", "model", (g) => {
     g.steps[0].status = "dropped";
   });
   assert.equal(re.headGraph().steps[0].status, "dropped");
-  re.switchBranch("main");
+  re.checkout("main");
   assert.equal(re.headGraph().steps[0].status, "in_progress");
   assert.equal(extractWorldResidue(re.data, re.branch("main")), "");
 
   // fork 自中间 revision：残留只算 fork 点之后的 fact
-  re.switchBranch("main");
+  re.checkout("main");
   const mid = re.forkBranch("back", "main", "rev-2");
   const midResidue = extractWorldResidue(re.data, mid);
   assert.ok(midResidue.includes("f-1")); // rev-3/rev-4 之后的 fact
-  re.switchBranch("main");
+  re.checkout("main");
 
   // rev-<n> 跨分支全局递增
-  re.switchBranch("back");
+  re.checkout("back");
   const revBack = re.applyOp("add_step", "model", (g) => {
     g.steps.push({ id: "s-2", text: "接口枚举", priority: 2, status: "pending", attempts: 0 });
   });
   assert.ok(Number(revBack.id.slice(4)) > 4);
-  re.switchBranch("main");
+  re.checkout("main");
   const revMain = re.applyOp("add_step", "model", (g) => {
     g.steps.push({ id: "s-3", text: "鉴权爆破", priority: 3, status: "pending", attempts: 0 });
   });
@@ -204,6 +204,18 @@ try {
   assert.equal(estTokens(zh), 29, "CJK 应按 ~1 字/token 计（旧实现 8）");
   assert.equal(estTokens("abcd"), 1, "ASCII 仍按 4 字符/token");
   assert.equal(estTokens("端口abcd"), 2 + 1, "混合串：CJK + ASCII/4");
+
+  // Step 7：onGraphChange 提交点通知 + checkout
+  const notified: Array<[string, string]> = [];
+  re.onGraphChange((r, b) => notified.push([r, b]));
+  const rv = re.applyOp("add_hint", "user", (g) => {
+    g.hints.push({ id: "h-1", text: "t", status: "active" });
+  });
+  assert.deepEqual(notified.at(-1), [rv.id, re.data.activeBranch]);
+  re.checkout("back");
+  assert.equal(re.data.activeBranch, "back");
+  assert.ok(notified.some(([r, b]) => b === "back"));
+  assert.throws(() => re.checkout("nope"), /unknown branch nope/);
 
   console.log("graphops: all assertions passed");
 } finally {

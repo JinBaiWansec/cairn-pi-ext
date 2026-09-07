@@ -1,4 +1,4 @@
-import { closeSync, existsSync, mkdirSync, openSync, readdirSync, writeSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, writeSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 // ---------------------------------------------------------------------------
@@ -51,6 +51,40 @@ export function ringTail(n: number): TranscriptEvent[] {
 /** Step 7 挂 SSE 池；返回解绑函数（内部便利，不改变 void 语义使用方式） */
 export function onTranscriptEvent(fn: (ev: TranscriptEvent) => void): void {
   listeners.add(fn);
+}
+
+/**
+ * Step 7：按 activityId 前缀（act-NNN-*.jsonl）读活动 JSONL，不依赖存活实例。
+ * offset = 事件序号（0-based，JSONL 行号）；limit 截断防大活动打爆首拉。
+ * 坏行策略：跳过该行但仍占序号（与 append-only 写盘语义一致）。
+ * 活动不存在 → 抛错。
+ */
+export function readTranscript(
+  runDir: string,
+  activityId: string,
+  offset = 0,
+  limit = 1000,
+): { events: TranscriptEvent[]; nextOffset: number } {
+  const dir = join(runDir, "transcripts");
+  const files = existsSync(dir)
+    ? readdirSync(dir).filter(
+        (f) => f.startsWith(`${activityId}-`) && f.endsWith(".jsonl"),
+      )
+    : [];
+  if (files.length === 0) throw new Error(`activity ${activityId} not found`);
+  const lines = readFileSync(join(dir, files[0]), "utf8").split("\n");
+  const total = lines.length - (lines[lines.length - 1] === "" ? 1 : 0);
+  const events: TranscriptEvent[] = [];
+  for (let i = Math.max(0, offset); i < total && events.length < limit; i++) {
+    const line = lines[i];
+    if (line === "") continue;
+    try {
+      events.push(JSON.parse(line) as TranscriptEvent);
+    } catch {
+      // 坏行：跳过但占序号
+    }
+  }
+  return { events, nextOffset: total };
 }
 
 function nextActivityNum(runDir: string): number {

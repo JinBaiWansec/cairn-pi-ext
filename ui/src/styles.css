@@ -110,32 +110,6 @@ body {
   animation: caret 1s step-end infinite;
 }
 
-/* S16 disabled 控制按钮 tooltip（CSS ::after，200ms 淡入） */
-.btn-step7 {
-  position: relative;
-  cursor: not-allowed;
-}
-.btn-step7::after {
-  content: "Step 7 启用 — 需 /ext/cairn/api 接线";
-  position: absolute;
-  top: calc(100% + 8px);
-  right: 0;
-  white-space: nowrap;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 6px 8px;
-  font-size: 11px;
-  color: var(--ink-dim);
-  opacity: 0;
-  transition: opacity 200ms var(--ease);
-  pointer-events: none;
-  z-index: 50;
-}
-.btn-step7:hover::after {
-  opacity: 1;
-}
-
 /* S6 分割条 hover 变蓝（200ms 常规） */
 .splitter {
   transition: background 200ms var(--ease);

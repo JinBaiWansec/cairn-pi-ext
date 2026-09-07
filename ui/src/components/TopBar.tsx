@@ -1,5 +1,7 @@
-// TopBar — 40px（S1）：CAIRN 标题 + Branch 下拉（D6 只呈现）+ 状态区（S2/S3/S11）
-// + 预算位（S4）+ Time/Tok + 连接徽章（S9/S10）+ 控制按钮（S16 disabled+tooltip）
+// TopBar — 40px（S1）：CAIRN 标题 + Branch 下拉 + 状态区（S2/S3/S11）
+// + 预算位（S4）+ Time/Tok + 连接徽章（S9/S10）+ 控制按钮（Step 7 启用：
+// ⏸/🛑 → POST /api/ops，⑂/Branch → /api/branch、/api/checkout；D10 终态 disabled）
+import { postBranch, postCheckout, postOp } from "../api";
 import { useGraph } from "../store/graph";
 import { useStatus, isStalled } from "../store/status";
 
@@ -26,6 +28,13 @@ export function TopBar() {
 
   const stalled = isStalled({ status, lastEventTs });
   const elapsed = status?.elapsedMs ?? 0;
+  const running = status?.running === true;
+  const fail = (e: unknown) => console.error("[cairn]", e);
+  const op = (k: "pause" | "abort") => void postOp(k, {}).catch(fail);
+  const newBranch = () => {
+    const name = window.prompt("新建分支名：");
+    if (name?.trim()) void postBranch(name.trim()).catch(fail);
+  };
 
   const stateInfo = offline
     ? { dot: "bg-stslate", text: "OFFLINE", cls: "text-ink-dim" }
@@ -57,8 +66,9 @@ export function TopBar() {
         <select
           className="min-h-8 rounded border border-border bg-bg px-1 text-[12px] text-ink"
           value={file?.activeBranch ?? ""}
-          disabled
-          aria-label="当前分支（Step 7 启用切换）"
+          disabled={!file}
+          onChange={(e) => void postCheckout(e.target.value).catch(fail)}
+          aria-label="当前分支"
         >
           {file?.branches.map((b) => (
             <option key={b.name} value={b.name}>
@@ -109,13 +119,29 @@ export function TopBar() {
         </span>
 
         <div className="flex items-center gap-1">
-          <button type="button" disabled className="btn-step7 min-h-8 rounded border border-border px-2 text-[12px] text-ink-dim" aria-disabled="true">
+          <button
+            type="button"
+            disabled={!running}
+            onClick={() => op("pause")}
+            title="暂停（当前活动完成后挂起）"
+            className="min-h-8 rounded border border-border px-2 text-[12px] text-ink transition-colors duration-150 hover:border-stblue disabled:cursor-not-allowed disabled:opacity-55"
+          >
             <span className="emoji" aria-hidden>⏸</span> 暂停
           </button>
-          <button type="button" disabled className="btn-step7 min-h-8 rounded border border-border px-2 text-[12px] text-ink-dim" aria-disabled="true">
+          <button
+            type="button"
+            disabled={!running}
+            onClick={() => op("abort")}
+            className="min-h-8 rounded border border-border px-2 text-[12px] text-ink transition-colors duration-150 hover:border-stblue disabled:cursor-not-allowed disabled:opacity-55"
+          >
             <span className="emoji" aria-hidden>🛑</span> 中止
           </button>
-          <button type="button" disabled className="btn-step7 min-h-8 rounded border border-border px-2 text-[12px] text-ink-dim" aria-disabled="true">
+          <button
+            type="button"
+            disabled={!running}
+            onClick={newBranch}
+            className="min-h-8 rounded border border-border px-2 text-[12px] text-ink transition-colors duration-150 hover:border-stblue disabled:cursor-not-allowed disabled:opacity-55"
+          >
             <span className="emoji" aria-hidden>⑂</span> 新建分支
           </button>
         </div>

@@ -112,6 +112,50 @@ export class CairnEngine {
   private zeroDiff = 0;
   private noFactStreak = 0;
   private fastPaths = 0;
+  /** Step 7 SSE 源 C：主循环执行中（run 开始~finish） */
+  private paused = false;
+  private currentActivity: string | null = null;
+  private statusListeners = new Set<() => void>();
+
+  /** 主循环是否在执行（parked/ended/未启动 = false） */
+  get running(): boolean {
+    return CairnEngine.running === this;
+  }
+
+  /** 当前活动 id（无活动 = null；status 端点省略字段） */
+  get currentActivityId(): string | null {
+    return this.currentActivity;
+  }
+
+  /** 活动间隙门：已启动活动不中断（Q2） */
+  pause(): void {
+    if (this.paused || !this.running) return;
+    this.paused = true;
+    this.log("paused");
+    this.notifyStatus();
+  }
+
+  resume(): void {
+    if (!this.paused) return;
+    this.paused = false;
+    this.log("resumed");
+    this.notifyStatus();
+  }
+
+  /** Step 7 SSE 源 C：状态迁移（活动开始/结束、parked、pause/resume、终止） */
+  onStatus(fn: () => void): void {
+    this.statusListeners.add(fn);
+  }
+
+  private notifyStatus(): void {
+    for (const fn of this.statusListeners) {
+      try {
+        fn();
+      } catch {
+        // listener 异常不影响主循环
+      }
+    }
+  }
 
   constructor(
     private opts: EngineOptions,
@@ -169,6 +213,8 @@ export class CairnEngine {
     const ops = this.ops!;
     const meta = this.meta!;
     while (this.state === "running") {
+      while (this.paused && !this.abortCtrl.signal.aborted)
+        await new Promise((r) => setTimeout(r, 300));
       if (meta.budget.executes >= cfg.maxExecutes) {
         this.log(`budget exhausted (${meta.budget.executes}/${cfg.maxExecutes})`);
         return "budget";
@@ -190,6 +236,7 @@ export class CairnEngine {
             this.banner("队列为空且 Decide 连续 2 轮无动作，进入挂起等待。请人工下发 Hint / Step。");
             this.state = "parked";
             this.persistRun();
+            this.notifyStatus();
             return "parked";
           }
         }
@@ -285,6 +332,8 @@ export class CairnEngine {
     const ops = this.ops!;
     const meta = this.meta!;
     const t = Transcript.open(runDir, kind, step?.id);
+    this.currentActivity = t.activityId;
+    this.notifyStatus();
     const beforeRevId = ops.activeBranch.head;
     const beforeFacts = ops.headGraph().facts.length;
 
@@ -319,6 +368,9 @@ export class CairnEngine {
     });
     t.close();
 
+    this.currentActivity = null;
+    this.notifyStatus();
+
     // ── 查图检测（§3.2 定案：不拦截 executeTool）──────────────────────────
     const branch = ops.activeBranch;
     const idx = branch.revisions.findIndex((r) => r.id === beforeRevId);
@@ -351,7 +403,10 @@ export class CairnEngine {
   private decidePrompts(): { systemPrompt: string; userPrompt: string } {
     const ops = this.ops!;
     const g = ops.headGraph();
-    const hints = g.hints.filter((h) => h.status === "active").map((h) => h.text);
+    // id 前缀必须保留：reject_hint 按 id 闭环，纯文本会让模型猜 id（e2e 实测 unknown hint id）
+    const hints = g.hints
+      .filter((h) => h.status === "active")
+      .map((h) => `[${h.id}] ${h.text}`);
     return decidePrompt({
       goal: g.goal,
       origin: g.origin,
@@ -439,6 +494,7 @@ export class CairnEngine {
       this.persistRun();
     }
     this.log(`end reason=${reason}`);
+    this.notifyStatus();
     this.widget();
   }
 

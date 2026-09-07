@@ -27,6 +27,20 @@ export const postOp = (op: string, args: Record<string, unknown>): Promise<{ ok:
     body: JSON.stringify({ op, args }),
   });
 
+// Step 7（D10）：独立分支端点（Q1：UI 只发 name；at/from 参数保留在后端）
+export const postBranch = (name: string): Promise<{ ok: boolean }> =>
+  j("/branch", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+export const postCheckout = (branch: string): Promise<{ ok: boolean }> =>
+  j("/checkout", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ branch }),
+  });
+
 // ── 刷新入口（组件重试按钮也走这里）─────────────────────────────
 export function refreshGraph(): Promise<void> {
   return getGraph()

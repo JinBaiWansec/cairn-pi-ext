@@ -382,7 +382,54 @@ try {
     console.log("T7 OK crash recovery");
   }
 
-  console.log("engine.test: all 7 scenarios passed");
+  // ── T8：pause/resume 间隙门 + abort 优先 + currentActivityId + onStatus ──
+  {
+    const runDir = mkdtempSync(join(tmpdir(), "cairn-engine-"));
+    runDirs.push(runDir);
+    const ops = GraphOps.create(runDir, "origin", "goal");
+    addStep(ops, "s-1", "slow then resume");
+    const statusFrames: Array<{ act: string | null }> = [];
+    const engine = new CairnEngine(
+      {
+        runDir,
+        cfg: baseCfg,
+        provider: makeProvider([
+          { kind: "slow", ms: 2000, text: "slow1" }, // exec#1
+          ...tail(),
+          ...tail(), // decide#1
+          { kind: "slow", ms: 4000, text: "slow2" }, // exec#2 拉长，abort 必落在活动内
+          ...tail(),
+        ]),
+        model: mockModel,
+      },
+      ops,
+    );
+    engine.onStatus(() => statusFrames.push({ act: engine.currentActivityId }));
+    const p = engine.run("origin", "goal");
+    await new Promise((r) => setTimeout(r, 200));
+    assert.equal(engine.running, true, "T8: running getter");
+    assert.ok(engine.currentActivityId, "T8: 活动进行中 currentActivityId 非空");
+    engine.pause();
+    engine.pause(); // 幂等
+    assert.equal(statusFrames.length, 2, "T8: 活动开始 + pause 各 1 帧（重复 pause 幂等）");
+    await new Promise((r) => setTimeout(r, 2500)); // slow 活动完成后主循环应挂在间隙门
+    assert.equal(ops.headGraph().steps[0].attempts, 1, "T8: pause 期间不启动第 2 次 exec");
+    assert.equal(engine.currentActivityId, null, "T8: 间隙中无活动");
+    engine.resume();
+    await new Promise((r) => setTimeout(r, 600)); // 间隙门 300ms 轮询，resume 生效 ≤300ms
+    assert.equal(ops.headGraph().steps[0].attempts, 2, "T8: resume 后主循环恢复（第 2 次 exec 启动）");
+    engine.abort(); // abort 优先：间隙门含 !aborted 立即醒来
+    const reason = await p;
+    assert.equal(reason, "aborted", "T8: abort 优先于 pause 门");
+    assert.ok(statusFrames.some((f) => f.act === null), "T8: 活动结束帧（act=null）");
+    // 未运行引擎上 pause/resume 空操作
+    const idle = new CairnEngine({ runDir, cfg: baseCfg }, ops);
+    idle.pause();
+    idle.resume();
+    console.log("T8 OK pause/resume gate + abort priority + onStatus");
+  }
+
+  console.log("engine.test: all 8 scenarios passed");
 } finally {
   for (const d of runDirs) rmSync(d, { recursive: true, force: true });
 }

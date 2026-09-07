@@ -4,13 +4,8 @@
  * ERR_UNKNOWN_FILE_EXTENSION).
  *
  * Usage:
- *   node test/run.mjs             # all tests EXCEPT model-dependent ones
- *   node test/run.mjs subagent    # explicit filter (subagent hits local LLM, ~1 min)
- *
- * Model-dependent (excluded by default):
- *   subagent.test.ts  — runs a real qwen/qwen-27b sub-session
- *
- * Step 5：engine.test.ts 全 mock 化，脱离 NO_MODEL 名单。
+ *   node test/run.mjs            # all tests
+ *   node test/run.mjs <substr>   # filter by filename substring
  */
 import { readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -20,11 +15,10 @@ import { createJiti } from "jiti";
 const dir = dirname(fileURLToPath(import.meta.url));
 const jiti = createJiti(import.meta.url);
 
-const NO_MODEL = ["subagent.test.ts"]; // hits local LLM — need explicit filter
 const filter = process.argv[2];
 const files = readdirSync(dir)
   .filter((f) => f.endsWith(".test.ts"))
-  .filter((f) => (filter ? f.includes(filter) : !NO_MODEL.includes(f)))
+  .filter((f) => !filter || f.includes(filter))
   .sort();
 
 let failed = 0;

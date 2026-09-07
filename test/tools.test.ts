@@ -106,11 +106,17 @@ const exec = makeExecuteTool(ctx);
 // --- 8 图工具（经 makeExecuteTool 分发）---------------------------------------
 {
   assert.match((await exec("add_step", { text: "A" })).output, /s-1/);
+  ops.applyOp("user_hint", "user", (g) => g.hints.push({ id: "h-1", text: "检查端口", status: "active" }));
   const r2 = await exec("add_step", { text: "B", priority: 10, addresses_hint: "h-1" });
   assert.match(r2.output, /s-2/);
   const g1 = ops.headGraph();
   assert.equal(g1.steps[1].priority, 10);
   assert.equal(g1.steps[1].addresses_hint, "h-1");
+  // 落实即闭环：hint 翻转 addressed（此前无任何代码路径置 addressed，e2e 实测只能 reject）
+  assert.equal(g1.hints[0].status, "addressed");
+  // 未知 hint id → 报错（模型不得拿文本猜 id）
+  const r2b = await exec("add_step", { text: "C", addresses_hint: "h-404" });
+  assert.match(r2b.output, /unknown hint id: h-404/);
 
   const sp = await exec("set_step_priority", { id: "s-2", priority: 99 });
   assert.equal(ops.headGraph().steps[1].priority, 99);
@@ -128,7 +134,7 @@ const exec = makeExecuteTool(ctx);
 
   ops.applyOp("user_hint", "user", (g) => g.hints.push({ id: "h-9", text: "试一下 SQLi", status: "active" }));
   assert.match((await exec("reject_hint", { id: "h-9", reason: "不适用" })).output, /reject_hint ok/);
-  assert.equal(ops.headGraph().hints[0].status, "rejected");
+  assert.equal(ops.headGraph().hints.find((h) => h.id === "h-9")!.status, "rejected");
 
   const bad = await exec("done_step", { id: "s-99" });
   assert.equal(bad.ok, false);

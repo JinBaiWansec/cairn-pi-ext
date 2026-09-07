@@ -31,9 +31,28 @@ export class GraphOps {
   readonly file: string;
   data: FGSFile;
 
+  /** Step 7 SSE 源 B：提交后通知（listener 异常不影响事务） */
+  private graphListeners = new Set<(rev: string, branch: string) => void>();
+
   private constructor(file: string, data: FGSFile) {
     this.file = file;
     this.data = data;
+  }
+
+  onGraphChange(fn: (rev: string, branch: string) => void): void {
+    this.graphListeners.add(fn);
+  }
+
+  private notifyGraph(): void {
+    const rev = this.activeBranch.head;
+    const branch = this.data.activeBranch;
+    for (const fn of this.graphListeners) {
+      try {
+        fn(rev, branch);
+      } catch {
+        // listener 异常不影响事务
+      }
+    }
   }
 
   /** 新建 Run：main 分支以 origin/goal 空图起始（rev-1, op=init, by=user）。 */
@@ -136,6 +155,7 @@ export class GraphOps {
     b.revisions.push(rev);
     b.head = rev.id;
     this.save();
+    this.notifyGraph();
     return rev;
   }
 
@@ -163,14 +183,16 @@ export class GraphOps {
     };
     this.data.branches.push(nb);
     this.save();
+    this.notifyGraph();
     return nb;
   }
 
-  /** 切换活跃分支（元数据写，不产生 revision）。 */
-  switchBranch(name: string): void {
+  /** 切换活跃分支（元数据写，不产生 revision；未知分支抛错）。 */
+  checkout(name: string): void {
     this.branch(name);
     this.data.activeBranch = name;
     this.save();
+    this.notifyGraph();
   }
 
   save(): void {
