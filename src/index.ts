@@ -127,6 +127,7 @@ function buildStatus(
     endReason: m.endReason,
     activeBranch: ops.data.activeBranch,
     rev: ops.activeBranch.head,
+    goal: m.goal,
     ...(active ? { activeStepId: active.id } : {}),
     budget: {
       executes: m.budget.executes,
@@ -590,8 +591,12 @@ export default function cairnExtension(pi: ExtensionAPI): void {
       startCairnServer({
         runDir: ws,
         ops: GraphOps.load(ws),
-        // SAFETY: 离线快照桩——HTTP 层只读 engine.running（false）与 engine.currentActivityId（undefined），不触发引擎方法
-        engine: { running: false } as unknown as CairnEngine,
+        // SAFETY: 离线快照桩——HTTP 层只读 engine.running（false）/currentActivityId（undefined），订阅类方法 no-op
+        engine: {
+          running: false,
+          onTranscriptEvent: () => {},
+          onStatus: () => {},
+        } as unknown as CairnEngine,
       })
         .then((h) => {
           if (live) h.close(); // /cairn run 抢先绑定过 → 弃掉本实例
