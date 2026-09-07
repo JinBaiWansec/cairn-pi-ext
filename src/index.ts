@@ -121,6 +121,8 @@ function buildStatus(
   const active = ops.headGraph().steps.find((s) => s.status === "in_progress");
   return {
     running: engine.running,
+    // 无活引擎时这是磁盘快照（旧 run 的遗留值可能失真）——UI 据此显示离线态
+    ...(engine.running ? {} : { stale: true }),
     state: m.state,
     endReason: m.endReason,
     activeBranch: ops.data.activeBranch,
@@ -129,7 +131,8 @@ function buildStatus(
     budget: {
       executes: m.budget.executes,
       decides: m.budget.decides,
-      maxExecutes: m.config.maxExecutes,
+      // 活引擎：报实时 cfg（磁盘 m.config 是上一轮 run 的旧值）；无引擎：报磁盘值
+      maxExecutes: engine.running ? loadConfig().maxExecutes : m.config.maxExecutes,
     },
     usage: m.usage,
     elapsedMs: m.endedAt
@@ -412,7 +415,15 @@ export function startCairnServer(opts: {
 
   const handle: CairnServerHandle = { port: 0, close };
   return new Promise((ok, err) => {
-    server.once("error", err);
+    server.once("error", (e: NodeJS.ErrnoException) =>
+      err(
+        e.code === "EADDRINUSE"
+          ? new Error(
+              `cairn UI 端口 ${opts.port ?? PORT} 被占用（另一个 pi 会话的扩展先绑定了）——本会话 /cairn 命令仍可用，但 UI/API 不可用`,
+            )
+          : e,
+      ),
+    );
     server.listen(opts.port ?? PORT, HOST, () => {
       handle.port = (server.address() as { port: number }).port;
       ok(handle);
